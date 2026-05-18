@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drawn Path Exporter</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Arial, sans-serif;
+      background: #101214;
+      color: #eceff3;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(360px, 1fr) 360px;
+    }
+    main {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #14181c;
+    }
+    aside {
+      border-left: 1px solid #303740;
+      padding: 18px;
+      background: #101214;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    canvas {
+      width: min(82vh, 92vw);
+      height: min(82vh, 92vw);
+      max-width: 820px;
+      max-height: 820px;
+      background: #070809;
+      border: 1px solid #3a434d;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 700;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: #c8d0d8;
+    }
+    input, select, textarea, button {
+      font: inherit;
+      border-radius: 6px;
+      border: 1px solid #3a434d;
+      background: #171c21;
+      color: #eceff3;
+      padding: 8px 10px;
+    }
+    textarea {
+      min-height: 220px;
+      resize: vertical;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    button {
+      cursor: pointer;
+      background: #202832;
+    }
+    button.primary {
+      background: #0f5d60;
+      border-color: #17868b;
+    }
+    .status {
+      color: #9ca8b4;
+      font-size: 12px;
+      min-height: 18px;
+    }
+    @media (max-width: 900px) {
+      body {
+        grid-template-columns: 1fr;
+      }
+      aside {
+        border-left: 0;
+        border-top: 1px solid #303740;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <canvas id="canvas" width="768" height="768" aria-label="drawing canvas"></canvas>
+  </main>
+  <aside>
+    <h1>Drawn Path Exporter</h1>
+    <div class="row">
+      <label>name
+        <input id="name" value="user_drawn_path">
+      </label>
+      <label>plane
+        <select id="plane">
+          <option value="xz" selected>XZ</option>
+          <option value="xy">XY</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <label>width_m
+        <input id="width" type="number" value="0.9" step="0.05" min="0.1">
+      </label>
+      <label>height_m
+        <input id="height" type="number" value="0.9" step="0.05" min="0.1">
+      </label>
+    </div>
+    <label>
+      <span><input id="led" type="checkbox" checked> LED on for next stroke</span>
+    </label>
+    <div class="buttons">
+      <button id="undo" type="button">Undo</button>
+      <button id="clear" type="button">Clear</button>
+      <button id="export" class="primary" type="button">Export JSON</button>
+      <button id="download" type="button">Download</button>
+    </div>
+    <textarea id="output" spellcheck="false"></textarea>
+    <div id="status" class="status"></div>
+  </aside>
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const strokes = [];
+    let current = null;
+
+    function pointFromEvent(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) / rect.width;
+      const y = (event.clientY - rect.top) / rect.height;
+      return [
+        Math.max(0, Math.min(1, x)),
+        Math.max(0, Math.min(1, y))
+      ];
+    }
+
+    function drawGrid() {
+      ctx.fillStyle = "#070809";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "#1c252d";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 8; i += 1) {
+        const p = i * canvas.width / 8;
+        ctx.beginPath();
+        ctx.moveTo(p, 0);
+        ctx.lineTo(p, canvas.height);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, p);
+        ctx.lineTo(canvas.width, p);
+        ctx.stroke();
+      }
+    }
+
+    function drawStroke(stroke, active) {
+      if (!stroke.points.length) return;
+      ctx.strokeStyle = stroke.led ? "#ff4b4b" : "#5aa7ff";
+      ctx.lineWidth = active ? 5 : 4;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      stroke.points.forEach((pt, idx) => {
+        const x = pt[0] * canvas.width;
+        const y = pt[1] * canvas.height;
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    function redraw() {
+      drawGrid();
+      strokes.forEach(s => drawStroke(s, false));
+      if (current) drawStroke(current, true);
+    }
+
+    function buildJson() {
+      return {
+        name: document.getElementById("name").value || "user_drawn_path",
+        coordinate_space: "normalized",
+        plane: document.getElementById("plane").value,
+        width_m: Number(document.getElementById("width").value || 0.9),
+        height_m: Number(document.getElementById("height").value || 0.9),
+        center_x: 0.0,
+        center_z: 1.5,
+        connect_strokes: true,
+        strokes: strokes.map(s => ({ led: Boolean(s.led), points: s.points }))
+      };
+    }
+
+    function exportJson() {
+      const text = JSON.stringify(buildJson(), null, 2);
+      document.getElementById("output").value = text;
+      document.getElementById("status").textContent = `${strokes.length} strokes exported`;
+      return text;
+    }
+
+    canvas.addEventListener("pointerdown", event => {
+      canvas.setPointerCapture(event.pointerId);
+      current = {
+        led: document.getElementById("led").checked,
+        points: [pointFromEvent(event)]
+      };
+      redraw();
+    });
+
+    canvas.addEventListener("pointermove", event => {
+      if (!current) return;
+      const pt = pointFromEvent(event);
+      const last = current.points[current.points.length - 1];
+      const dx = pt[0] - last[0];
+      const dy = pt[1] - last[1];
+      if (Math.hypot(dx, dy) > 0.004) {
+        current.points.push(pt);
+        redraw();
+      }
+    });
+
+    function finishStroke() {
+      if (current && current.points.length >= 2) strokes.push(current);
+      current = null;
+      redraw();
+    }
+
+    canvas.addEventListener("pointerup", finishStroke);
+    canvas.addEventListener("pointercancel", finishStroke);
+
+    document.getElementById("undo").addEventListener("click", () => {
+      strokes.pop();
+      redraw();
+      exportJson();
+    });
+    document.getElementById("clear").addEventListener("click", () => {
+      strokes.length = 0;
+      current = null;
+      redraw();
+      exportJson();
+    });
+    document.getElementById("export").addEventListener("click", exportJson);
+    document.getElementById("download").addEventListener("click", () => {
+      const text = exportJson();
+      const blob = new Blob([text], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${buildJson().name || "drawn_path"}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    redraw();
+    exportJson();
+  </script>
+</body>
+</html>

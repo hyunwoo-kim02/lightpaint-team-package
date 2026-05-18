@@ -1,0 +1,26 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+/.venv/
+/venv/
+/env/
+
+# Local test/runtime caches
+artifacts/pytest-cache/
+artifacts/pytest-tmp/
+
+# Generated experiment and visualization artifacts
+artifacts/
+!artifacts/README.md
+
+# Trained model binaries; use Git LFS or DVC if these must be versioned.
+models/*.zip
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
