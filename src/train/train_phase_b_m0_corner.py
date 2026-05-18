@@ -28,7 +28,7 @@ _PKG_ROOT = _HERE.parent.parent
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB
+from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB, RESIDUAL_DELTA_MAX
 from src.env.lightpaint_ref import LightPaintRef, make_square_ref
 from src.train.train_phase_a_pid import (
     CTRL_FREQ,
@@ -92,6 +92,68 @@ def _phase_a_action(_: dict[str, Any]) -> np.ndarray:
 
 def _phase_b_zero_action(_: dict[str, Any]) -> np.ndarray:
     return np.zeros(4, dtype=np.float32)
+
+
+def _make_corner_decel_teacher(ref: LightPaintRef, gain_mps: float, window_m: float) -> Callable[[dict[str, Any]], np.ndarray]:
+    internal_corner_s = np.asarray(ref.cumlen[1:-1], dtype=np.float32)
+
+    def _teacher(ctx: dict[str, Any]) -> np.ndarray:
+        info = ctx["info"]
+        t = float(info.get("t", 0.0))
+        s_now = t * float(ref.speed)
+        action = np.zeros(4, dtype=np.float32)
+        if internal_corner_s.size == 0:
+            return action
+        ahead = internal_corner_s[internal_corner_s >= s_now]
+        if ahead.size == 0:
+            return action
+        dist_to_next = float(ahead[0] - s_now)
+        if not (0.0 <= dist_to_next <= float(window_m)):
+            return action
+        v_ref = np.asarray(info.get("v_ref", [0.0, 0.0, 0.0]), dtype=np.float32)
+        norm = float(np.linalg.norm(v_ref))
+        if norm <= 1e-6:
+            return action
+        delta_v = -float(gain_mps) * (v_ref / norm)
+        action[:3] = np.clip(delta_v / RESIDUAL_DELTA_MAX, -1.0, 1.0)
+        return action.astype(np.float32)
+
+    return _teacher
+
+
+def _filter_corner_tangent_decel_action(
+    action: np.ndarray,
+    info: dict[str, Any],
+    ref: LightPaintRef,
+    window_m: float,
+) -> np.ndarray:
+    """Keep only learned pre-corner deceleration along the reference tangent."""
+    filtered = np.zeros(4, dtype=np.float32)
+    internal_corner_s = np.asarray(ref.cumlen[1:-1], dtype=np.float32)
+    if internal_corner_s.size == 0:
+        filtered[3] = float(action[3])
+        return filtered
+    t = float(info.get("t", 0.0))
+    s_now = t * float(ref.speed)
+    ahead = internal_corner_s[internal_corner_s >= s_now]
+    if ahead.size == 0:
+        filtered[3] = float(action[3])
+        return filtered
+    dist_to_next = float(ahead[0] - s_now)
+    if not (0.0 <= dist_to_next <= float(window_m)):
+        filtered[3] = float(action[3])
+        return filtered
+    v_ref = np.asarray(info.get("v_ref", [0.0, 0.0, 0.0]), dtype=np.float32)
+    norm = float(np.linalg.norm(v_ref))
+    if norm <= 1e-6:
+        filtered[3] = float(action[3])
+        return filtered
+    unit = v_ref / norm
+    tangent_action = float(np.dot(np.asarray(action[:3], dtype=np.float32), unit))
+    tangent_action = min(tangent_action, 0.0)
+    filtered[:3] = tangent_action * unit
+    filtered[3] = float(action[3])
+    return np.clip(filtered, -1.0, 1.0).astype(np.float32)
 
 
 def _rollout(
@@ -431,6 +493,117 @@ def _make_model(args: argparse.Namespace, vec_env: Any):
     )
 
 
+def _collect_bc_dataset(
+    *,
+    action_fn: Callable[[dict[str, Any]], np.ndarray],
+    episodes: int,
+    reference: LightPaintRef,
+    max_steps: int,
+    seed: int,
+    init_box_size: float,
+    led_always_on: bool,
+    ctrl_freq: int,
+    pyb_freq: int,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    obs_rows: dict[str, list[np.ndarray]] = {
+        "drone_state": [],
+        "future_ref": [],
+        "target_mask": [],
+        "progress_mask": [],
+    }
+    action_rows: list[np.ndarray] = []
+    for ep in range(int(episodes)):
+        env = _make_env(
+            phase="B",
+            reference=reference,
+            max_steps=max_steps,
+            seed=seed + ep,
+            init_box_size=init_box_size,
+            led_always_on=led_always_on,
+            ctrl_freq=ctrl_freq,
+            pyb_freq=pyb_freq,
+        )
+        obs, info = env.reset(seed=seed + ep)
+        for _ in range(max_steps):
+            action = np.asarray(action_fn({"obs": obs, "info": info}), dtype=np.float32).reshape(4)
+            for key in obs_rows:
+                obs_rows[key].append(np.asarray(obs[key], dtype=np.float32).copy())
+            action_rows.append(action.copy())
+            obs, _, term, trunc, info = env.step(action)
+            if term or trunc:
+                break
+        env.close()
+    obs_batch = {key: np.stack(vals).astype(np.float32) for key, vals in obs_rows.items()}
+    action_batch = np.stack(action_rows).astype(np.float32)
+    return obs_batch, action_batch
+
+
+def _behavior_clone_policy(
+    model: Any,
+    obs_batch: dict[str, np.ndarray],
+    action_batch: np.ndarray,
+    *,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    nonzero_weight: float,
+    seed: int,
+    out_path: Path,
+) -> dict[str, Any]:
+    import torch
+
+    rng = np.random.default_rng(seed)
+    optimizer = torch.optim.Adam(model.policy.parameters(), lr=float(learning_rate))
+    model.policy.set_training_mode(True)
+    n = int(action_batch.shape[0])
+    target_delta_norm = np.linalg.norm(action_batch[:, :3], axis=1)
+    nonzero_mask = target_delta_norm > 1e-6
+    sample_weights = np.ones(n, dtype=np.float32)
+    sample_weights[nonzero_mask] = max(float(nonzero_weight), 1.0)
+    losses: list[float] = []
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(out_path), "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "loss"])
+        for epoch in range(int(epochs)):
+            order = rng.permutation(n)
+            epoch_losses: list[float] = []
+            for start in range(0, n, int(batch_size)):
+                idx = order[start:start + int(batch_size)]
+                obs_tensor = {
+                    key: torch.as_tensor(value[idx], device=model.device)
+                    for key, value in obs_batch.items()
+                }
+                target = torch.as_tensor(action_batch[idx], device=model.device)
+                weight = torch.as_tensor(sample_weights[idx], device=model.device).view(-1, 1)
+                dist = model.policy.get_distribution(obs_tensor)
+                pred = dist.distribution.mean
+                per_sample_loss = torch.mean((pred - target) ** 2, dim=1, keepdim=True)
+                loss = torch.sum(per_sample_loss * weight) / torch.clamp(torch.sum(weight), min=1.0)
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.policy.parameters(), 0.5)
+                optimizer.step()
+                epoch_losses.append(float(loss.detach().cpu().item()))
+            mean_loss = float(np.mean(epoch_losses)) if epoch_losses else float("nan")
+            losses.append(mean_loss)
+            writer.writerow([epoch, f"{mean_loss:.8f}"])
+    return {
+        "n_samples": n,
+        "epochs": int(epochs),
+        "batch_size": int(batch_size),
+        "learning_rate": float(learning_rate),
+        "nonzero_weight": float(nonzero_weight),
+        "nonzero_samples": int(np.sum(nonzero_mask)),
+        "nonzero_fraction": float(np.mean(nonzero_mask)) if n else 0.0,
+        "target_delta_norm_mean": float(np.mean(target_delta_norm)) if n else 0.0,
+        "target_delta_norm_nonzero_mean": float(np.mean(target_delta_norm[nonzero_mask])) if np.any(nonzero_mask) else 0.0,
+        "initial_loss": float(losses[0]) if losses else float("nan"),
+        "final_loss": float(losses[-1]) if losses else float("nan"),
+        "loss_csv": str(out_path),
+    }
+
+
 def main(args: argparse.Namespace) -> int:
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv
@@ -464,6 +637,12 @@ def main(args: argparse.Namespace) -> int:
     }
     phase_a = _rollout(tag="phaseA_pid", phase="A", action_fn=_phase_a_action, **common)
     phase_b_zero = _rollout(tag="phaseB_zero", phase="B", action_fn=_phase_b_zero_action, **common)
+    teacher_fn = _make_corner_decel_teacher(
+        ref,
+        gain_mps=float(args.teacher_gain),
+        window_m=float(args.teacher_window_m),
+    )
+    phase_b_teacher = _rollout(tag="phaseB_teacher", phase="B", action_fn=teacher_fn, **common)
 
     def _train_env() -> Monitor:
         return Monitor(_make_env(phase="B", **common))
@@ -478,23 +657,62 @@ def main(args: argparse.Namespace) -> int:
         **common,
     )
 
-    print("[phase_b_m0_corner] PPO learn start", flush=True)
     train_start = time.perf_counter()
-    model.learn(total_timesteps=int(args.total_timesteps), progress_bar=False)
+    bc_summary: dict[str, Any] | None = None
+    if int(args.bc_epochs) > 0:
+        print("[phase_b_m0_corner] BC warm-start collect start", flush=True)
+        obs_batch, action_batch = _collect_bc_dataset(
+            action_fn=teacher_fn,
+            episodes=int(args.bc_episodes),
+            **common,
+        )
+        bc_summary = _behavior_clone_policy(
+            model,
+            obs_batch,
+            action_batch,
+            epochs=int(args.bc_epochs),
+            batch_size=int(args.bc_batch_size),
+            learning_rate=float(args.bc_learning_rate),
+            nonzero_weight=float(args.bc_nonzero_weight),
+            seed=int(args.seed),
+            out_path=artifacts_dir / "phase_b_square_M0_bc_loss.csv",
+        )
+        print(
+            f"[phase_b_m0_corner] BC done samples={bc_summary['n_samples']} "
+            f"nonzero={bc_summary['nonzero_samples']} "
+            f"loss={bc_summary['initial_loss']:.6f}->{bc_summary['final_loss']:.6f}",
+            flush=True,
+        )
+    if int(args.total_timesteps) > 0:
+        print("[phase_b_m0_corner] PPO learn start", flush=True)
+        model.learn(total_timesteps=int(args.total_timesteps), progress_bar=False)
+        print("[phase_b_m0_corner] PPO learn done", flush=True)
     train_walltime = time.perf_counter() - train_start
-    print(f"[phase_b_m0_corner] PPO learn done walltime={train_walltime:.2f}s", flush=True)
+    print(f"[phase_b_m0_corner] train stage done walltime={train_walltime:.2f}s", flush=True)
 
     model_path = model_dir / "ppo_phaseB_square_M0_corner.zip"
     model.save(str(model_path))
+
+    def _trained_action(ctx: dict[str, Any]) -> np.ndarray:
+        action = np.asarray(model.predict(ctx["obs"], deterministic=True)[0], dtype=np.float32).reshape(4)
+        if args.trained_action_filter == "corner_tangent_decel":
+            return _filter_corner_tangent_decel_action(
+                action,
+                ctx["info"],
+                ref,
+                float(args.teacher_window_m),
+            )
+        return action
+
     phase_b_after = _rollout(
         tag="phaseB_trained",
         phase="B",
-        action_fn=lambda ctx: model.predict(ctx["obs"], deterministic=True)[0],
+        action_fn=_trained_action,
         **common,
     )
     vec_env.close()
 
-    results = [phase_a, phase_b_zero, phase_b_before, phase_b_after]
+    results = [phase_a, phase_b_zero, phase_b_teacher, phase_b_before, phase_b_after]
     metrics_rows = [_metrics(r, ref, float(args.corner_window_m)) for r in results]
     metrics_path = artifacts_dir / "phase_b_square_M0_corner_metrics.csv"
     _write_metrics_csv(metrics_path, metrics_rows)
@@ -540,14 +758,20 @@ def main(args: argparse.Namespace) -> int:
     trained_straight = float(trained["straight_path_rmse_m"])
     zero_corner_speed = float(zero["corner_mean_speed_mps"])
     trained_corner_speed = float(trained["corner_mean_speed_mps"])
+    zero_coverage = float(zero["painted_pixel_coverage"])
+    trained_coverage = float(trained["painted_pixel_coverage"])
     success = {
-        "corner_path_rmse_improved": bool(trained_corner < zero_corner),
-        "corner_speed_reduced": bool(trained_corner_speed < zero_corner_speed),
+        "corner_path_rmse_reduced_20pct": bool(trained_corner <= zero_corner * 0.80),
+        "corner_speed_reduced_5_to_20pct": bool(
+            zero_corner_speed * 0.80 <= trained_corner_speed <= zero_corner_speed * 0.95
+        ),
         "straight_path_rmse_not_worse_10pct": bool(trained_straight <= zero_straight * 1.10),
+        "painting_coverage_kept_90pct": bool(trained_coverage >= zero_coverage * 0.90),
         "overall_pass": bool(
-            trained_corner < zero_corner
-            and trained_corner_speed < zero_corner_speed
+            trained_corner <= zero_corner * 0.80
+            and zero_corner_speed * 0.80 <= trained_corner_speed <= zero_corner_speed * 0.95
             and trained_straight <= zero_straight * 1.10
+            and trained_coverage >= zero_coverage * 0.90
         ),
     }
     summary = {
@@ -561,8 +785,14 @@ def main(args: argparse.Namespace) -> int:
             "total_timesteps": int(args.total_timesteps),
             "corner_window_m": float(args.corner_window_m),
             "log_std_init": float(args.log_std_init),
+            "teacher_gain": float(args.teacher_gain),
+            "teacher_window_m": float(args.teacher_window_m),
+            "bc_epochs": int(args.bc_epochs),
+            "bc_episodes": int(args.bc_episodes),
+            "trained_action_filter": str(args.trained_action_filter),
         },
         "train_walltime_s": train_walltime,
+        "bc": bc_summary,
         "success_criteria": success,
         "metrics": metrics_rows,
         "artifacts": artifact_index,
@@ -597,6 +827,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ent-coef", type=float, default=0.0)
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument("--log-std-init", type=float, default=-2.0)
+    parser.add_argument("--teacher-gain", type=float, default=0.10)
+    parser.add_argument("--teacher-window-m", type=float, default=0.15)
+    parser.add_argument("--bc-epochs", type=int, default=0)
+    parser.add_argument("--bc-episodes", type=int, default=4)
+    parser.add_argument("--bc-batch-size", type=int, default=64)
+    parser.add_argument("--bc-learning-rate", type=float, default=1e-3)
+    parser.add_argument("--bc-nonzero-weight", type=float, default=1.0)
+    parser.add_argument("--trained-action-filter", choices=["none", "corner_tangent_decel"], default="none")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--verbose", type=int, default=0)
     parser.add_argument("--save-video", action="store_true")
