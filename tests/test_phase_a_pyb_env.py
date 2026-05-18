@@ -133,6 +133,20 @@ def test_phase_b_zero_action_matches_pid_led_baseline():
         np.testing.assert_allclose(info_b["target_vel"], info_b["v_ref"], atol=1e-7)
         assert info_b["delta_led"] == pytest.approx(0.0)
         assert info_b["brightness"] == pytest.approx(info_b["led_ref"])
+        for key in (
+            "r_path",
+            "r_schedule",
+            "r_led_target",
+            "r_led_off",
+            "r_led_miss",
+            "r_smooth",
+            "r_corner_speed",
+            "r_completion",
+            "paint_coverage",
+        ):
+            assert key in info_b
+            assert np.isfinite(info_b[key])
+        assert info_b["r_schedule"] > info_b["r_path"]
         np.testing.assert_allclose(info_b["u_pid_rpm"], info_a["u_pid_rpm"], rtol=1e-5, atol=1e-3)
         assert info_b["brightness"] == pytest.approx(info_a["brightness"])
     finally:
@@ -165,6 +179,9 @@ def test_phase_b_nonzero_action_changes_target_velocity_and_led():
         assert info["led_ref"] == pytest.approx(1.0)
         assert info["brightness"] == pytest.approx(0.0)
         assert info["led_on"] is False
+        assert info["r_led_miss"] < 0.0
+        assert info["r_action_mag"] < 0.0
+        assert info["r_led_flicker"] <= 0.0
     finally:
         env.close()
 

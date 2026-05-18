@@ -64,6 +64,28 @@ Y_CANVAS = 0.0
 
 LED_STAMP_RADIUS_PX = 1
 LAMBDA_SMOOTH = 0.4
+PATH_SIGMA_M = 0.08
+SCHEDULE_SIGMA_M = 0.15
+W_PATH = 0.6
+W_SCHEDULE = 1.0
+W_NEW_TARGET = 1.2
+W_OFF_TARGET = 1.6
+W_REPAINT = 0.2
+W_ACTION_MAG = 0.8
+W_ACTION_RATE = 0.3
+W_LED_MISS = 1.2
+W_LED_FLICKER = 0.05
+CORNER_WINDOW_M = 0.28
+CORNER_SPEED_FRACTION = 0.65
+CORNER_SIGMA_M = 0.08
+W_CORNER_SPEED = 16.0
+W_CORNER_TRACK = 0.25
+W_CORNER_PATH = 0.7
+W_CORNER_DECEL = 2.0
+W_CORNER_ACCEL = 2.5
+W_CORNER_LATERAL = 1.0
+W_COMPLETION = 3.0
+W_INCOMPLETE = 1.0
 
 MAX_EPISODE_STEPS_DEFAULT = 2000
 
@@ -149,6 +171,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._latched_wind = np.zeros(3, dtype=np.float32)
         self._episode_step = 0
         self._prev_rpm = None
+        self._prev_delta_v = None
         self._last_p_ref = np.zeros(3, dtype=np.float32)
         self._last_v_ref = np.zeros(3, dtype=np.float32)
         self._last_delta_v = np.zeros(3, dtype=np.float32)
@@ -161,7 +184,10 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._last_brightness = 0.0
         self._last_tracking_err = 0.0
         self._last_out_of_bounds = False
+        self._last_path_dist = 0.0
+        self._last_reward = 0.0
         self._last_reward_components: Dict[str, float] = {}
+        self._completion_reward_given = False
 
         # --- Initial position at top of reference + noise ---
         start = self._ref_waypoints[0] if len(self._ref_waypoints) else np.array([0, 0, 1.5])
@@ -579,31 +605,211 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 physicsClientId=self.CLIENT,
             )
 
+    def _nearest_path_stats(self, pos: np.ndarray) -> Tuple[float, int, float]:
+        pts = np.asarray(self._ref_waypoints, dtype=np.float32)
+        p0 = np.asarray(pos, dtype=np.float32).reshape(3)
+        if len(pts) < 2:
+            return float(np.linalg.norm(p0 - pts[0])), 0, 0.0
+        seg = pts[1:] - pts[:-1]
+        rel = p0[None, :] - pts[:-1]
+        seg_len2 = np.sum(seg * seg, axis=1)
+        alpha = np.clip(np.sum(rel * seg, axis=1) / np.maximum(seg_len2, 1e-9), 0.0, 1.0)
+        closest = pts[:-1] + alpha[:, None] * seg
+        dists = np.linalg.norm(closest - p0[None, :], axis=1)
+        idx = int(np.argmin(dists))
+        return float(dists[idx]), idx, float(alpha[idx])
+
+    def _corner_sharpness(self, segment_idx: int) -> float:
+        pts = np.asarray(self._ref_waypoints, dtype=np.float32)
+        if len(pts) < 3 or segment_idx >= len(pts) - 2:
+            return 0.0
+        return self._corner_sharpness_at_waypoint(segment_idx + 1)
+
+    def _corner_sharpness_at_waypoint(self, corner_idx: int) -> float:
+        pts = np.asarray(self._ref_waypoints, dtype=np.float32)
+        if len(pts) < 3 or corner_idx <= 0 or corner_idx >= len(pts) - 1:
+            return 0.0
+        a = pts[corner_idx] - pts[corner_idx - 1]
+        b = pts[corner_idx + 1] - pts[corner_idx]
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < 1e-9 or nb < 1e-9:
+            return 0.0
+        cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
+        return float(np.clip((1.0 - cosang) * 0.5, 0.0, 1.0))
+
+    def _corner_context(self, segment_idx: int, alpha: float) -> Tuple[float, float, float]:
+        pts = np.asarray(self._ref_waypoints, dtype=np.float32)
+        cum = np.asarray(self._ref_cumlen, dtype=np.float32)
+        if len(pts) < 3 or len(cum) != len(pts) or segment_idx >= len(pts) - 1:
+            return 0.0, 0.0, float("inf")
+        seg_len = float(np.linalg.norm(pts[segment_idx + 1] - pts[segment_idx]))
+        s_now = float(cum[segment_idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
+        corner_indices = np.arange(1, len(pts) - 1, dtype=np.int32)
+        if corner_indices.size == 0:
+            return 0.0, 0.0, float("inf")
+        corner_s = cum[corner_indices]
+        nearest_rel = int(np.argmin(np.abs(corner_s - s_now)))
+        corner_idx = int(corner_indices[nearest_rel])
+        corner_dist = float(abs(float(cum[corner_idx]) - s_now))
+        if corner_dist > CORNER_WINDOW_M:
+            return 0.0, 0.0, corner_dist
+        influence = (1.0 - corner_dist / max(CORNER_WINDOW_M, 1e-6)) ** 2
+        sharpness = self._corner_sharpness_at_waypoint(corner_idx)
+        return float(influence * sharpness), float(sharpness), corner_dist
+
+    def _paint_stats(self, pos: np.ndarray, brightness: float) -> Tuple[float, float, float]:
+        if brightness <= 0.0:
+            return 0.0, 0.0, 0.0
+        col, row = world_to_pixel(float(pos[0]), float(pos[2]))
+        r = LED_STAMP_RADIUS_PX
+        new_target = 0
+        off_target = 0
+        repaint = 0
+        total = 0
+        for dr in range(-r, r + 1):
+            for dc in range(-r, r + 1):
+                rr = int(np.clip(row + dr, 0, 63))
+                cc = int(np.clip(col + dc, 0, 63))
+                total += 1
+                if float(self.G_letter[rr, cc]) > 0.5:
+                    if float(self.cumulative[rr, cc]) <= 1e-6:
+                        new_target += 1
+                    else:
+                        repaint += 1
+                else:
+                    off_target += 1
+        denom = float(max(total, 1))
+        return new_target / denom, off_target / denom, repaint / denom
+
+    def _paint_coverage(self) -> float:
+        target = np.asarray(self.G_letter, dtype=np.float32) > 0.5
+        target_px = int(target.sum())
+        if target_px <= 0:
+            return 0.0
+        painted = np.asarray(self.cumulative, dtype=np.float32) > 0.3
+        return float(np.logical_and(painted, target).sum()) / float(target_px)
+
+    def _reference_done_for_reward(self, t: float) -> bool:
+        if self.reference is not None:
+            return bool(float(t) >= float(self.reference.duration))
+        if len(self._ref_cumlen) > 0:
+            return bool(float(t) >= float(self._ref_cumlen[-1]) / max(V_REF, 1e-6))
+        return False
+
     def _compute_reward_phase_a(
         self,
         pos: np.ndarray,
         p_ref: np.ndarray,
+        led_ref: float,
         brightness: float,
         rpm: np.ndarray,
         prev_rpm: Optional[np.ndarray],
         out_of_bounds: bool,
+        new_target: float,
+        off_target: float,
+        repaint: float,
+        prev_brightness: float,
+        speed: float,
+        coverage: float,
+        completion_due: bool,
     ) -> Tuple[float, Dict[str, float]]:
-        r_track = -float(np.linalg.norm(pos - p_ref))
-        col, row = world_to_pixel(float(pos[0]), float(pos[2]))
-        on_target = bool(self.G_letter[row, col] > 0.5)
-        r_led_scripted = 1.0 if (brightness > 0.5 and on_target) else 0.0
+        schedule_err = float(np.linalg.norm(pos - p_ref))
+        path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
+        corner_influence, corner_sharpness, corner_dist = self._corner_context(segment_idx, alpha)
+        r_path = W_PATH * float(np.exp(-((path_dist / PATH_SIGMA_M) ** 2)))
+        r_schedule = W_SCHEDULE * float(np.exp(-((schedule_err / SCHEDULE_SIGMA_M) ** 2)))
+        r_corner_track = W_CORNER_TRACK * corner_influence * float(
+            np.exp(-((schedule_err / CORNER_SIGMA_M) ** 2))
+        )
+        r_corner_path = W_CORNER_PATH * corner_influence * float(
+            np.exp(-((path_dist / CORNER_SIGMA_M) ** 2))
+        )
+        r_led_target = W_NEW_TARGET * float(new_target)
+        r_led_off = -W_OFF_TARGET * float(off_target)
+        r_repaint = -W_REPAINT * float(repaint)
+        r_led_miss = -W_LED_MISS * max(0.0, float(led_ref) - float(brightness))
         if prev_rpm is not None:
             du = (rpm - prev_rpm) / 5000.0  # normalize RPM delta
             r_smooth = float(np.exp(-float(np.linalg.norm(du)))) * LAMBDA_SMOOTH
         else:
             r_smooth = LAMBDA_SMOOTH
+        r_action_mag = -W_ACTION_MAG * float(np.dot(self._last_delta_v, self._last_delta_v))
+        if self._prev_delta_v is not None:
+            delta_rate = self._last_delta_v - self._prev_delta_v
+            r_action_rate = -W_ACTION_RATE * float(np.dot(delta_rate, delta_rate))
+        else:
+            r_action_rate = 0.0
+        r_led_flicker = -W_LED_FLICKER * abs(float(brightness) - float(prev_brightness))
+        ref_speed = float(np.linalg.norm(self._last_v_ref))
+        if ref_speed < 1e-6:
+            ref_speed = V_REF
+        v_corner_limit = ref_speed * CORNER_SPEED_FRACTION
+        r_corner_speed = -W_CORNER_SPEED * corner_influence * max(0.0, float(speed) - v_corner_limit) ** 2
+        if ref_speed > 1e-6:
+            v_ref_unit = self._last_v_ref / ref_speed
+            delta_along_ref = float(np.dot(self._last_delta_v, v_ref_unit))
+            delta_lateral = self._last_delta_v - delta_along_ref * v_ref_unit
+        else:
+            delta_along_ref = 0.0
+            delta_lateral = self._last_delta_v
+        r_corner_decel = W_CORNER_DECEL * corner_influence * max(0.0, -delta_along_ref)
+        r_corner_accel = -W_CORNER_ACCEL * corner_influence * max(0.0, delta_along_ref)
+        r_corner_lateral = -W_CORNER_LATERAL * corner_influence * float(np.dot(delta_lateral, delta_lateral))
+        coverage = float(np.clip(coverage, 0.0, 1.0))
+        r_completion = (W_COMPLETION * coverage - W_INCOMPLETE * (1.0 - coverage)) if completion_due else 0.0
         r_terminal = -100.0 if out_of_bounds else 0.0
-        total = r_track + r_led_scripted + r_smooth + r_terminal
+        total = (
+            r_path
+            + r_schedule
+            + r_led_target
+            + r_led_off
+            + r_repaint
+            + r_led_miss
+            + r_smooth
+            + r_action_mag
+            + r_action_rate
+            + r_led_flicker
+            + r_corner_track
+            + r_corner_path
+            + r_corner_speed
+            + r_corner_decel
+            + r_corner_accel
+            + r_corner_lateral
+            + r_completion
+            + r_terminal
+        )
         return total, {
-            "r_track": r_track,
-            "r_led_scripted": r_led_scripted,
+            "r_path": r_path,
+            "r_schedule": r_schedule,
+            "r_track": r_path + r_schedule,
+            "r_led_target": r_led_target,
+            "r_led_off": r_led_off,
+            "r_repaint": r_repaint,
+            "r_led_miss": r_led_miss,
+            "r_led_scripted": r_led_target + r_led_off + r_repaint + r_led_miss,
             "r_smooth": r_smooth,
+            "r_action_mag": r_action_mag,
+            "r_action_rate": r_action_rate,
+            "r_led_flicker": r_led_flicker,
+            "r_corner_track": r_corner_track,
+            "r_corner_path": r_corner_path,
+            "r_corner_speed": r_corner_speed,
+            "r_corner_decel": r_corner_decel,
+            "r_corner_accel": r_corner_accel,
+            "r_corner_lateral": r_corner_lateral,
+            "r_completion": r_completion,
             "r_terminal": r_terminal,
+            "path_dist": path_dist,
+            "schedule_err": schedule_err,
+            "paint_coverage": coverage,
+            "corner_sharpness": corner_sharpness,
+            "corner_influence": corner_influence,
+            "corner_dist_m": corner_dist,
+            "corner_delta_v_along_ref": delta_along_ref,
+            "paint_new_target": float(new_target),
+            "paint_off_target": float(off_target),
+            "paint_repaint": float(repaint),
         }
 
     def _stamp_led_progress(self, pos: np.ndarray, brightness: float = 1.0) -> None:
@@ -626,12 +832,24 @@ class LightPaintAviaryPyB(BaseRLAviary):
 
     def _computeReward(self) -> float:
         pos = self._get_world_pos()
+        try:
+            state_20 = np.asarray(self._getDroneStateVector(0), dtype=np.float32).flatten()
+            speed = float(np.linalg.norm(state_20[10:13]))
+        except Exception:
+            speed = 0.0
+        prev_brightness = float(self._last_brightness)
         t_led = float(self._episode_step) * self._ctrl_dt
         led_ref = self._scripted_led_ref(pos, t_led)
         delta_led = self._last_delta_led if self.phase == "B" else 0.0
         brightness = float(np.clip(led_ref + delta_led, 0.0, 1.0))
-        if brightness > 0.0:
+        led_on = brightness > 0.5
+        paint_brightness = brightness if led_on else 0.0
+        new_target, off_target, repaint = self._paint_stats(pos, paint_brightness)
+        if led_on:
             self._stamp_led_progress(pos, brightness)
+        reference_done = self._reference_done_for_reward(t_led)
+        coverage = self._paint_coverage()
+        completion_due = bool(reference_done and not self._completion_reward_given)
         # Out-of-bounds check (xz arena + small y latitude)
         out_of_bounds = bool(
             pos[2] < Z_MIN - 0.5
@@ -642,16 +860,29 @@ class LightPaintAviaryPyB(BaseRLAviary):
         reward, components = self._compute_reward_phase_a(
             pos=pos,
             p_ref=self._last_p_ref,
+            led_ref=led_ref,
             brightness=brightness,
             rpm=self._last_rpm,
             prev_rpm=self._prev_rpm,
             out_of_bounds=out_of_bounds,
+            new_target=new_target,
+            off_target=off_target,
+            repaint=repaint,
+            prev_brightness=prev_brightness,
+            speed=speed,
+            coverage=coverage,
+            completion_due=completion_due,
         )
+        if completion_due:
+            self._completion_reward_given = True
         self._prev_rpm = self._last_rpm.copy()
+        self._prev_delta_v = self._last_delta_v.copy()
         self._last_led_ref = float(led_ref)
         self._last_brightness = brightness
         self._last_tracking_err = float(np.linalg.norm(pos - self._last_p_ref))
         self._last_out_of_bounds = out_of_bounds
+        self._last_path_dist = float(components["path_dist"])
+        self._last_reward = float(reward)
         self._last_reward_components = components
         self._episode_step += 1
         return float(reward)
@@ -686,7 +917,8 @@ class LightPaintAviaryPyB(BaseRLAviary):
             "led_on": bool(self._last_brightness > 0.5),
             "painted_px": int(self.cumulative.sum()),
             "tracking_err": float(self._last_tracking_err),
-            "r": float(sum(self._last_reward_components.values())) if self._last_reward_components else 0.0,
+            "path_dist": float(self._last_path_dist),
+            "r": float(self._last_reward),
             **self._last_reward_components,
         }
 
@@ -709,6 +941,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._latched_wind = np.zeros(3, dtype=np.float32)
         self._episode_step = 0
         self._prev_rpm = None
+        self._prev_delta_v = None
         p0, v0, yaw0 = self._reference_state(0.0)
         self._last_p_ref = p0.copy()
         self._last_v_ref = v0.copy()
@@ -723,7 +956,10 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._last_brightness = 0.0
         self._last_tracking_err = 0.0
         self._last_out_of_bounds = False
+        self._last_path_dist = 0.0
+        self._last_reward = 0.0
         self._last_reward_components = {}
+        self._completion_reward_given = False
 
         obs, info = super().reset(seed=seed, options=options)
         return obs, info

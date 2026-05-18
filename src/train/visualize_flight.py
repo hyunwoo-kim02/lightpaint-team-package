@@ -62,6 +62,7 @@ def save_phase_a_visualization(
     ref_waypoints: Optional[np.ndarray] = None,
     ref_cumlen: Optional[np.ndarray] = None,
     ref_segment_led: Optional[np.ndarray] = None,
+    ref_pos_list: Optional[list] = None,
     snapshots: Optional[list] = None,
     phase_prefix: str = "phase_a",
     phase_display_name: str = "Phase A",
@@ -94,6 +95,8 @@ def save_phase_a_visualization(
     frames_dir = out_dir / f"{phase_prefix}_{safe_label}_{wind_mode}_frames"
     mp4_path = out_dir / f"{phase_prefix}_{safe_label}_{wind_mode}.mp4"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    for old_frame in frames_dir.glob("frame_*.png"):
+        old_frame.unlink()
 
     # ---------- 3D PNG ----------
     fig = plt.figure(figsize=(10, 8))
@@ -157,6 +160,11 @@ def save_phase_a_visualization(
     running_paint = np.zeros((64, 64), dtype=np.float32)
     n_frames = 0
     n_steps = len(pos_list)
+    ref_pos_arr = None
+    if ref_pos_list is not None:
+        ref_pos_arr = np.asarray(ref_pos_list, dtype=np.float32).reshape(-1, 3)
+        if len(ref_pos_arr) < n_steps:
+            ref_pos_arr = None
     # Sub-sample for performance (cap ~120 frames)
     stride = max(1, n_steps // 120)
     n_cols = 3 if has_drone_view else 2
@@ -184,9 +192,37 @@ def save_phase_a_visualization(
         xs_t = [float(p[0]) for p in pos_list[: t + 1]]
         zs_t = [float(p[2]) for p in pos_list[: t + 1]]
         cs_t = ["red" if (b > 0.5) else "steelblue" for b in brightness_list[: t + 1]]
+        if ref_pos_arr is not None:
+            ax_l.plot(
+                ref_pos_arr[: t + 1, 0],
+                ref_pos_arr[: t + 1, 2],
+                color="yellow",
+                linewidth=1.0,
+                alpha=0.8,
+                label="commanded p_ref",
+            )
         if xs_t:
             ax_l.scatter(xs_t, zs_t, c=cs_t, s=3, alpha=0.7)
             ax_l.scatter([xs_t[-1]], [zs_t[-1]], c="lime", s=40, zorder=5)
+            if ref_pos_arr is not None:
+                ref_now = ref_pos_arr[t]
+                ax_l.scatter(
+                    [float(ref_now[0])],
+                    [float(ref_now[2])],
+                    c="yellow",
+                    marker="x",
+                    s=70,
+                    linewidths=2.0,
+                    zorder=6,
+                )
+                ax_l.plot(
+                    [xs_t[-1], float(ref_now[0])],
+                    [zs_t[-1], float(ref_now[2])],
+                    color="white",
+                    linestyle="--",
+                    linewidth=0.8,
+                    alpha=0.75,
+                )
         ax_l.set_xlim(X_MIN, X_MAX)
         ax_l.set_ylim(Z_MIN, Z_MAX)
         ax_l.set_title(f"XZ t={t}", color="white", fontsize=8)

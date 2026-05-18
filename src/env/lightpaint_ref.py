@@ -407,11 +407,8 @@ def make_drawn_path_ref(
         if connect_strokes and dist > 1e-6:
             all_points.append(first.copy())
             segment_led.append(0.0)
-        elif not connect_strokes and dist > 1e-6:
-            all_points.append(first.copy())
-            segment_led.append(0.0)
 
-        start_idx = 1
+        start_idx = 1 if connect_strokes and dist > 1e-6 else 0
         for p in stroke_pts[start_idx:]:
             all_points.append(p.copy())
             segment_led.append(led_value)

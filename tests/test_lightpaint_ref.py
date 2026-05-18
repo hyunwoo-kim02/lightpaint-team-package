@@ -88,6 +88,24 @@ def test_drawn_path_ref_adds_led_off_connectors():
     assert float(ref.led(t_mid_connector)) == 0.0
 
 
+def test_drawn_path_ref_can_leave_strokes_disconnected():
+    ref = make_drawn_path_ref(
+        strokes=[
+            {"points": [[0.1, 0.2], [0.4, 0.2]], "led": True},
+            {"points": [[0.8, 0.7], [0.8, 0.4]], "led": True},
+        ],
+        plane="xz",
+        coordinate_space="normalized",
+        speed=0.3,
+        smooth=False,
+        connect_strokes=False,
+    )
+
+    assert ref.waypoints.shape[0] == 4
+    assert ref.segment_led.shape == (3,)
+    assert np.all(ref.segment_led == 1.0)
+
+
 def test_load_drawn_path_ref_from_json(tmp_path):
     path = tmp_path / "drawn.json"
     path.write_text(

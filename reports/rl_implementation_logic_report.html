@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LightPaint RL 구현 핵심 로직 보고서</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2933;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --accent: #0f766e;
+      --accent-soft: #e4f5f2;
+      --warn: #9a3412;
+      --warn-soft: #fff1e6;
+      --code: #111827;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", Arial, sans-serif;
+      line-height: 1.62;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 32px auto 56px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(31, 41, 51, 0.08);
+      overflow: hidden;
+    }
+
+    header {
+      padding: 36px 40px 28px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbfb 100%);
+    }
+
+    h1, h2, h3 {
+      line-height: 1.25;
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 30px;
+      margin-bottom: 12px;
+    }
+
+    h2 {
+      font-size: 22px;
+      margin-top: 34px;
+      padding-top: 8px;
+    }
+
+    h3 {
+      font-size: 17px;
+      margin-top: 20px;
+    }
+
+    p { margin: 10px 0; }
+
+    .meta {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .content {
+      padding: 8px 40px 40px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .summary div,
+    .note,
+    .warning {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      background: #ffffff;
+    }
+
+    .summary strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+
+    .note {
+      background: var(--accent-soft);
+      border-color: #b9e4dc;
+      margin: 16px 0;
+    }
+
+    .warning {
+      background: var(--warn-soft);
+      border-color: #fed7aa;
+      color: #5c2a0c;
+      margin: 16px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 22px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #f1f5f9;
+      font-weight: 650;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #eef2f7;
+      color: var(--code);
+      font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 22px;
+      padding: 16px;
+      border-radius: 8px;
+      background: #101828;
+      color: #f8fafc;
+      overflow-x: auto;
+      font-family: "Cascadia Mono", Consolas, Menlo, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    ul, ol {
+      margin: 10px 0 18px;
+      padding-left: 24px;
+    }
+
+    li { margin: 6px 0; }
+
+    .tag {
+      display: inline-block;
+      margin-right: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #0f5f58;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 14px 0 20px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: #fbfcfe;
+    }
+
+    .toc {
+      columns: 2;
+      margin-top: 18px;
+    }
+
+    .toc a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .toc a:hover { text-decoration: underline; }
+
+    @media (max-width: 760px) {
+      main {
+        width: calc(100% - 20px);
+        margin: 10px auto 28px;
+      }
+
+      header,
+      .content {
+        padding-left: 20px;
+        padding-right: 20px;
+      }
+
+      .summary,
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .toc {
+        columns: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>LightPaint RL 구현 핵심 로직 보고서</h1>
+    <p class="meta">작성일: 2026-05-18 · 대상: <code>lightpaint-team-package</code> · 목적: RL 구현/학습/디버깅 시 반드시 공유해야 하는 high-level 계약 정리</p>
+    <div class="summary">
+      <div>
+        <strong>현재 기준선</strong>
+        Phase A는 PID + scripted LED + M0 외란 없음 baseline이다.
+      </div>
+      <div>
+        <strong>학습 대상</strong>
+        Phase B는 PID를 대체하지 않고 target velocity와 LED에 residual을 더한다.
+      </div>
+      <div>
+        <strong>물리 기준</strong>
+        production 검증은 PyBullet env 기준이며 standalone은 fallback/smoke 용도다.
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <h2>목차</h2>
+    <ol class="toc">
+      <li><a href="#pipeline">전체 파이프라인</a></li>
+      <li><a href="#phases">Phase A/B/C 의미</a></li>
+      <li><a href="#reference">Reference와 GT의 관계</a></li>
+      <li><a href="#action">Action 계약</a></li>
+      <li><a href="#observation">Observation 계약</a></li>
+      <li><a href="#pid">PID와 RL residual의 역할 분리</a></li>
+      <li><a href="#led">LED와 painting update</a></li>
+      <li><a href="#reward">Reward shaping</a></li>
+      <li><a href="#wind">외란 모델</a></li>
+      <li><a href="#envs">PyBullet vs standalone</a></li>
+      <li><a href="#tests">회귀 테스트가 보장하는 것</a></li>
+      <li><a href="#codemap">코드 맵</a></li>
+    </ol>
+
+    <section id="pipeline">
+      <h2>1. 전체 파이프라인</h2>
+      <p>현재 구현은 “경로 생성 → PID baseline → RL residual 보정 → LED/paint 누적 → reward/eval” 구조다. RL이 raw motor RPM을 직접 배우는 구조가 아니라, 이미 있는 reference 추종 제어 위에서 보정량을 학습한다.</p>
+      <pre><code>LightPaintRef / letter skeleton
+        ↓
+reference state: p_ref, v_ref, yaw_ref, led_ref
+        ↓
+Phase A: PID(p_ref, v_ref) + scripted LED
+Phase B: PID(p_ref, v_ref + delta_v) + clipped(led_ref + delta_led)
+        ↓
+PyBullet physics / standalone physics
+        ↓
+progress_mask, cumulative paint, reward components, info diagnostics</code></pre>
+      <div class="note">
+        핵심 해석: Phase A는 학습 라벨을 생성하는 데이터셋이 아니라, Phase B가 “zero action일 때 돌아와야 하는 baseline 동작”이다.
+      </div>
+    </section>
+
+    <section id="phases">
+      <h2>2. Phase A/B/C 의미</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>구분</th>
+            <th>목적</th>
+            <th>Action space</th>
+            <th>외란</th>
+            <th>현재 상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Phase A</code></td>
+            <td>PID + scripted LED baseline sanity/regression</td>
+            <td><code>Box(0, 0, shape=(0,), dtype=float32)</code></td>
+            <td><code>M0</code>만 허용</td>
+            <td>기준선. 깨지면 Phase B 학습 신뢰 불가</td>
+          </tr>
+          <tr>
+            <td><code>Phase B</code></td>
+            <td>velocity residual + LED residual 학습</td>
+            <td><code>Box(-1, 1, shape=(4,), dtype=float32)</code></td>
+            <td><code>M0/M1/M2</code> 사용 가능</td>
+            <td>현재 RL 학습/강건성 실험 대상</td>
+          </tr>
+          <tr>
+            <td><code>Phase C</code></td>
+            <td>이후 고수준 LED/경로 정책 확장 후보</td>
+            <td>discrete/continuous placeholder</td>
+            <td>정책 설계 필요</td>
+            <td>현재 active A/B 경로 밖</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>현재 코드상 Phase 구분은 필수다. Phase A와 Phase B는 action shape, wind constraint, action preprocessing, 테스트 계약이 다르다.</p>
+    </section>
+
+    <section id="reference">
+      <h2>3. Reference와 GT의 관계</h2>
+      <p><code>LightPaintRef</code> 또는 letter skeleton이 실제 기준 경로를 정의한다. 여기서 생성되는 것은 <code>waypoints</code>, 누적 거리, 기준 속도, stroke별 LED 값이다. Phase A는 이 reference를 PID로 추종해 baseline rollout을 만들 뿐, GT 자체를 새로 생성하지 않는다.</p>
+      <ul>
+        <li><code>p_ref</code>: 현재 시각 또는 arc-length 기준 목표 위치</li>
+        <li><code>v_ref</code>: reference를 따라 움직이는 기준 속도</li>
+        <li><code>led_ref</code>: target mask 또는 stroke segment 기준 scripted LED</li>
+        <li><code>segment_led</code>: stroke는 LED on, connector는 LED off로 표현</li>
+      </ul>
+      <div class="warning">
+        코너 스무딩 관점에서 중요한 점: 현재 reference가 이미 어느 정도 smoothing을 가질 수 있고, Phase B는 그 위에서 residual로 감속/보정 행동을 배운다. 즉 “reference geometry”와 “RL residual behavior”를 분리해서 봐야 한다.
+      </div>
+    </section>
+
+    <section id="action">
+      <h2>4. Action 계약</h2>
+      <h3>Phase A</h3>
+      <p>RL action이 없다. step에는 <code>np.zeros(0, dtype=np.float32)</code>가 들어가며, PID와 scripted LED만 동작한다.</p>
+
+      <h3>Phase B</h3>
+      <p>Phase B action은 반드시 4차원이다.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Index</th>
+            <th>의미</th>
+            <th>적용 위치</th>
+            <th>중요 계약</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>action[0:3]</code></td>
+            <td>3축 target velocity residual</td>
+            <td><code>target_vel = v_ref + delta_v</code></td>
+            <td>물리 command에 직접 더하지 않는다. PID target velocity에 들어간다.</td>
+          </tr>
+          <tr>
+            <td><code>action[3]</code></td>
+            <td>LED residual</td>
+            <td><code>brightness = clip(led_ref + delta_led, 0, 1)</code></td>
+            <td>info 기록만이 아니라 실제 painting/update 흐름에 반영된다.</td>
+          </tr>
+        </tbody>
+      </table>
+      <pre><code>delta_v   = action[0:3] * RESIDUAL_DELTA_MAX
+delta_led = action[3]   * LED_RESIDUAL_SCALE
+
+target_vel = v_ref + delta_v
+rpm = DSLPIDControl(..., target_pos=p_ref, target_vel=target_vel)
+
+brightness = clip(led_ref + delta_led, 0.0, 1.0)
+led_on = brightness &gt; 0.5</code></pre>
+      <p><span class="tag">필수 invariant</span><code>action = 0</code>인 Phase B는 가능한 한 Phase A PID + scripted LED baseline과 같아야 한다.</p>
+    </section>
+
+    <section id="observation">
+      <h2>5. Observation 계약</h2>
+      <p>PyBullet과 standalone은 공통적으로 Dict observation을 쓴다. 학습 코드는 이 key와 shape에 의존한다.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Shape</th>
+            <th>의미</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>drone_state</code></td>
+            <td><code>(12,)</code></td>
+            <td>position, velocity, attitude, angular velocity의 정규화 상태</td>
+          </tr>
+          <tr>
+            <td><code>future_ref</code></td>
+            <td><code>(45,)</code></td>
+            <td>미래 reference point 15개 × 3축</td>
+          </tr>
+          <tr>
+            <td><code>target_mask</code></td>
+            <td><code>(1, 64, 64)</code></td>
+            <td>그려야 하는 static target mask</td>
+          </tr>
+          <tr>
+            <td><code>progress_mask</code></td>
+            <td><code>(1, 64, 64)</code></td>
+            <td>현재까지 실제로 칠한 누적 mask</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Gymnasium API는 <code>reset() -> (obs, info)</code>, <code>step(action) -> (obs, reward, terminated, truncated, info)</code> 계약을 따른다.</p>
+    </section>
+
+    <section id="pid">
+      <h2>6. PID와 RL residual의 역할 분리</h2>
+      <div class="grid-2">
+        <div class="panel">
+          <h3>PID가 담당하는 것</h3>
+          <ul>
+            <li>reference position과 velocity 추종</li>
+            <li>PyBullet에서는 <code>DSLPIDControl.computeControlFromState</code>로 RPM 산출</li>
+            <li>Phase A baseline과 Phase B zero-action 기준 형성</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>RL residual이 담당하는 것</h3>
+          <ul>
+            <li>코너에서 속도/방향 residual 보정</li>
+            <li>M1/M2 외란에 대한 강건성 보정</li>
+            <li>LED on/off timing residual 보정</li>
+            <li>과도한 action 변화는 reward penalty로 억제</li>
+          </ul>
+        </div>
+      </div>
+      <p>중요한 점은 Phase B가 “PID를 버리는 학습”이 아니라 “PID target을 수정하는 학습”이라는 것이다. 따라서 정책이 잘못 학습되어도 baseline으로 돌아갈 수 있는 zero-action anchor가 있다.</p>
+    </section>
+
+    <section id="led">
+      <h2>7. LED와 painting update</h2>
+      <p>LED는 <code>led_ref + delta_led</code>로 계산된 brightness를 사용한다. 현재 painting 판정은 binary threshold 기준이다.</p>
+      <ul>
+        <li><code>brightness = clip(led_ref + delta_led, 0, 1)</code></li>
+        <li><code>led_on = brightness &gt; 0.5</code></li>
+        <li><code>led_on == true</code>일 때만 progress mask에 stamp한다.</li>
+        <li>paint metric은 target 위 신규 도색, target 밖 도색, repaint를 분리한다.</li>
+      </ul>
+      <p>이 설계는 “LED residual을 info에만 기록하는 fake 구현”을 피한다. 실제 <code>progress_mask</code>, reward, coverage 진단에 반영된다.</p>
+    </section>
+
+    <section id="reward">
+      <h2>8. Reward shaping</h2>
+      <p>현재 reward는 과하게 복잡한 최종 논문용 metric이 아니라, 학습이 망가지기 쉬운 행동을 막는 최소 shaping 항목으로 구성되어 있다.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Reward component</th>
+            <th>의미</th>
+            <th>유도/억제 행동</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>r_path</code></td>
+            <td>reference path에 가까울수록 보상</td>
+            <td>경로 이탈 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_schedule</code></td>
+            <td>현재 시간의 <code>p_ref</code>에 가까울수록 보상</td>
+            <td>무한히 천천히 가거나 멈추는 행동 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_led_target</code></td>
+            <td>target 위 신규 도색 보상</td>
+            <td>필요한 곳을 실제로 칠하도록 유도</td>
+          </tr>
+          <tr>
+            <td><code>r_led_off</code></td>
+            <td>target 밖 도색 penalty</td>
+            <td>원하지 않는 선/번짐 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_repaint</code></td>
+            <td>이미 칠한 곳 재도색 penalty</td>
+            <td>같은 픽셀 반복 도색 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_smooth</code></td>
+            <td>RPM 또는 final command 변화 smoothness</td>
+            <td>제어 진동 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_action_mag</code>, <code>r_action_rate</code></td>
+            <td>residual 크기와 변화율 penalty</td>
+            <td>PID baseline을 불필요하게 크게 훼손하는 정책 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_led_flicker</code></td>
+            <td>brightness 급변 penalty</td>
+            <td>LED 깜빡임 억제</td>
+          </tr>
+          <tr>
+            <td><code>r_corner_speed</code></td>
+            <td>코너 sharpness가 클 때 과속 penalty</td>
+            <td>코너에서 자연스러운 감속 학습 유도</td>
+          </tr>
+          <tr>
+            <td><code>r_terminal</code></td>
+            <td>out-of-bounds penalty</td>
+            <td>비행 영역 이탈 억제</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note">
+        코너 스무딩은 별도 “정답 trajectory”만으로 해결되는 것이 아니라, path 유지 + schedule 유지 + corner speed penalty + residual smoothness가 함께 작동하면서 학습될 수 있는 구조다.
+      </div>
+    </section>
+
+    <section id="wind">
+      <h2>9. 외란 모델</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Mode</th>
+            <th>현재 의미</th>
+            <th>학습/검증 용도</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>M0</code></td>
+            <td>zero force</td>
+            <td>Phase A PID sanity baseline</td>
+          </tr>
+          <tr>
+            <td><code>M1</code></td>
+            <td>episode마다 수평 방향/크기를 샘플링한 constant world-frame force</td>
+            <td>기본 외란 강건성 smoke/regression</td>
+          </tr>
+          <tr>
+            <td><code>M2</code></td>
+            <td>수평 방향은 고정, magnitude는 sinusoidal gust</td>
+            <td>시간 변화 외란에 대한 residual 보정 검증</td>
+          </tr>
+          <tr>
+            <td><code>M3</code></td>
+            <td>placeholder</td>
+            <td>현재 필수 구현 범위 밖</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>PyBullet env에서는 rotor physics 이후 <code>p.applyExternalForce(..., flags=p.WORLD_FRAME)</code>로 외란을 실제 physics에 적용한다. standalone env는 numpy physics에 force를 반영하지만 fidelity는 PyBullet보다 낮다.</p>
+    </section>
+
+    <section id="envs">
+      <h2>10. PyBullet vs standalone/fallback</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>항목</th>
+            <th>PyBullet env</th>
+            <th>Standalone env</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>파일</td>
+            <td><code>src/env/light_paint_aviary_pyb.py</code></td>
+            <td><code>src/env/light_paint_aviary_standalone.py</code></td>
+          </tr>
+          <tr>
+            <td>목적</td>
+            <td>production physics/evaluation 기준</td>
+            <td>PyBullet 없이 빠른 smoke/fallback</td>
+          </tr>
+          <tr>
+            <td>제어</td>
+            <td>Crazyflie CF2X + <code>DSLPIDControl</code> + RPM</td>
+            <td>numpy PID velocity command + 간단 physics</td>
+          </tr>
+          <tr>
+            <td>Phase B 계약</td>
+            <td><code>target_vel = v_ref + delta_v</code></td>
+            <td>동일 계약으로 맞춤</td>
+          </tr>
+          <tr>
+            <td>학습 결과 보장</td>
+            <td>실제 기준</td>
+            <td>동일 결과 보장 없음. smoke와 빠른 디버깅용</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="warning">
+        standalone으로 학습한 정책이 PyBullet에서 동일하게 동작한다는 보장은 없다. 둘의 공통 계약은 맞추되, 최종 판단은 PyBullet에서 해야 한다.
+      </div>
+    </section>
+
+    <section id="tests">
+      <h2>11. 회귀 테스트가 보장하는 것</h2>
+      <ul>
+        <li>Phase A env reset/step smoke와 Gymnasium API 계약</li>
+        <li>Phase B action space가 <code>Box(-1, 1, shape=(4,), dtype=float32)</code>임</li>
+        <li>Phase B zero-action이 PID/LED baseline과 일치함</li>
+        <li>Phase B nonzero action이 <code>target_vel</code>과 LED brightness에 실제 영향을 줌</li>
+        <li><code>step(action)</code>이 PyBullet <code>_preprocessAction</code>까지 action을 전달함</li>
+        <li>M1/M2 외란이 nonzero force를 만들고, PyBullet에서는 <code>WORLD_FRAME</code>으로 적용됨</li>
+        <li>standalone fallback도 Phase B residual 계약을 따른다</li>
+        <li>visualization frame directory가 stale frame을 섞지 않는다</li>
+      </ul>
+    </section>
+
+    <section id="codemap">
+      <h2>12. 코드 맵</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>파일</th>
+            <th>역할</th>
+            <th>볼 포인트</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/env/light_paint_aviary_pyb.py</code></td>
+            <td>PyBullet production env</td>
+            <td>Phase action space, <code>_preprocessAction</code>, reward, external force</td>
+          </tr>
+          <tr>
+            <td><code>src/env/light_paint_aviary_standalone.py</code></td>
+            <td>numpy fallback env</td>
+            <td>Phase B contract parity, quick smoke tests</td>
+          </tr>
+          <tr>
+            <td><code>src/env/lightpaint_ref.py</code></td>
+            <td>reference path generation</td>
+            <td>drawn path, smoothing, stroke connector LED semantics</td>
+          </tr>
+          <tr>
+            <td><code>src/env/wind_modes.py</code></td>
+            <td>external disturbance modes</td>
+            <td>M0/M1/M2 force generation</td>
+          </tr>
+          <tr>
+            <td><code>src/env/led_strategy.py</code></td>
+            <td>scripted LED decision</td>
+            <td>Phase A/B baseline LED reference</td>
+          </tr>
+          <tr>
+            <td><code>src/env/pybullet_setup.py</code></td>
+            <td>PyBullet asset path handling</td>
+            <td>Korean path workaround, ASCII mirror, import stability</td>
+          </tr>
+          <tr>
+            <td><code>src/train/train_phase_a_pid.py</code></td>
+            <td>Phase A PID baseline run</td>
+            <td>trajectory artifacts, metrics, visualization</td>
+          </tr>
+          <tr>
+            <td><code>src/train/visualize_flight.py</code></td>
+            <td>flight visualization</td>
+            <td>3D path, frame export, mp4/gif, summary figures</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_phase_a_pyb_env.py</code></td>
+            <td>PyBullet A/B contract tests</td>
+            <td>zero-action equivalence, nonzero effect, external force, API</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_phase_b_standalone_env.py</code></td>
+            <td>fallback Phase B contract tests</td>
+            <td>residual target velocity, LED, M2 smoke</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_wind_modes.py</code></td>
+            <td>wind model tests</td>
+            <td>M0 zero, M1 constant nonzero, M2 time-varying nonzero</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>13. 운영 체크리스트</h2>
+      <ul>
+        <li>Phase B 학습 전 Phase A baseline regression이 깨지지 않았는지 확인한다.</li>
+        <li>Phase B 정책 평가 시 <code>action=0</code> baseline과 nonzero residual 효과를 분리해서 본다.</li>
+        <li>외란 robustness는 최소 <code>M1</code>, <code>M2</code>에서 smoke 후 긴 학습으로 넘어간다.</li>
+        <li>LED 성능은 <code>led_on</code>, <code>brightness</code>, <code>paint_new_target</code>, <code>paint_off_target</code>, <code>paint_repaint</code>를 함께 본다.</li>
+        <li>fallback env 결과를 최종 성능으로 해석하지 않는다. PyBullet 결과가 기준이다.</li>
+      </ul>
+    </section>
+  </div>
+</main>
+</body>
+</html>

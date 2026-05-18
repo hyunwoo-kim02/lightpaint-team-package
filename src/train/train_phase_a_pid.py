@@ -372,6 +372,7 @@ def main(args: argparse.Namespace) -> int:
         ref_waypoints=env._ref_waypoints.copy(),
         ref_cumlen=env._ref_cumlen.copy(),
         ref_segment_led=reference.segment_led.copy() if reference is not None else None,
+        ref_pos_list=ref_list,
         snapshots=snapshots,
     )
     print(f"[phase_a] visualization paths: {paths}", flush=True)

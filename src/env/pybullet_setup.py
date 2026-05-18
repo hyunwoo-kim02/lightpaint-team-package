@@ -21,8 +21,64 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
+import uuid
 
 _APPLIED = False
+
+
+def _is_ascii_path(path: str) -> bool:
+    try:
+        os.fspath(path).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _base_temp_dir() -> str:
+    candidates = [
+        tempfile.gettempdir(),
+        os.environ.get("LOCALAPPDATA"),
+        os.environ.get("ProgramData"),
+        r"C:\Temp",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = os.path.abspath(candidate)
+        if _is_ascii_path(candidate) and os.path.isdir(candidate):
+            return candidate
+    fallback = os.path.join(os.getcwd(), ".pybullet_ascii_cache")
+    os.makedirs(fallback, exist_ok=True)
+    if not _is_ascii_path(fallback):
+        raise RuntimeError(f"No ASCII-safe PyBullet cache directory is available: {fallback!r}")
+    return fallback
+
+
+def _acquire_lock(lock_path: str, timeout_s: float = 30.0):
+    start = time.time()
+    while True:
+        try:
+            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.time() - start > timeout_s:
+                try:
+                    if time.time() - os.path.getmtime(lock_path) > timeout_s:
+                        os.unlink(lock_path)
+                        continue
+                except FileNotFoundError:
+                    continue
+                raise TimeoutError(f"Timed out waiting for PyBullet asset mirror lock: {lock_path}")
+            time.sleep(0.05)
+
+
+def _copy_asset_mirror(src_dir: str, dst_dir: str) -> None:
+    parent = os.path.dirname(dst_dir)
+    tmp_dir = os.path.join(parent, f".{os.path.basename(dst_dir)}.{uuid.uuid4().hex}.tmp")
+    shutil.copytree(src_dir, tmp_dir)
+    if os.path.isdir(dst_dir):
+        shutil.rmtree(dst_dir)
+    os.replace(tmp_dir, dst_dir)
 
 
 def apply_korean_path_fix(mirror_dirname: str = "lightpaint_pybullet_data") -> str:
@@ -32,30 +88,36 @@ def apply_korean_path_fix(mirror_dirname: str = "lightpaint_pybullet_data") -> s
     Idempotent — safe to call multiple times.
     """
     global _APPLIED
-    ascii_dir = os.path.join(tempfile.gettempdir(), mirror_dirname)
+    ascii_dir = os.path.join(_base_temp_dir(), mirror_dirname)
+    if not _is_ascii_path(ascii_dir):
+        raise RuntimeError(f"PyBullet mirror path is not ASCII-safe: {ascii_dir!r}")
 
     # 1. Copy pybullet_data → mirror
     import pybullet_data as _pbd
     pbd_source = _pbd.getDataPath()
-    if not os.path.isdir(ascii_dir):
-        shutil.copytree(pbd_source, ascii_dir)
-    elif os.path.abspath(pbd_source) != os.path.abspath(ascii_dir):
-        # A stale mirror can exist from a previous failed/import-interrupted run.
-        # Keep it, but refresh missing pybullet_data files such as plane.urdf.
-        shutil.copytree(pbd_source, ascii_dir, dirs_exist_ok=True)
-
-    # 2. Copy gym_pybullet_drones/assets/* → mirror (overlay)
+    lock_fd = _acquire_lock(ascii_dir + ".lock")
     try:
-        import gym_pybullet_drones as _gpd
-        gpd_assets = os.path.join(os.path.dirname(_gpd.__file__), "assets")
-        if os.path.isdir(gpd_assets):
-            for fn in os.listdir(gpd_assets):
-                src = os.path.join(gpd_assets, fn)
-                dst = os.path.join(ascii_dir, fn)
-                if os.path.isfile(src) and not os.path.isfile(dst):
-                    shutil.copy2(src, dst)
-    except ImportError:
-        pass
+        if not os.path.isfile(os.path.join(ascii_dir, "plane.urdf")):
+            _copy_asset_mirror(pbd_source, ascii_dir)
+        elif os.path.abspath(pbd_source) != os.path.abspath(ascii_dir):
+            shutil.copytree(pbd_source, ascii_dir, dirs_exist_ok=True)
+        try:
+            import gym_pybullet_drones as _gpd
+            gpd_assets = os.path.join(os.path.dirname(_gpd.__file__), "assets")
+            if os.path.isdir(gpd_assets):
+                for fn in os.listdir(gpd_assets):
+                    src = os.path.join(gpd_assets, fn)
+                    dst = os.path.join(ascii_dir, fn)
+                    if os.path.isfile(src) and not os.path.isfile(dst):
+                        shutil.copy2(src, dst)
+        except ImportError:
+            pass
+    finally:
+        os.close(lock_fd)
+        try:
+            os.unlink(ascii_dir + ".lock")
+        except FileNotFoundError:
+            pass
 
     if _APPLIED:
         return ascii_dir
