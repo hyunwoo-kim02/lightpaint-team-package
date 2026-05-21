@@ -14,6 +14,11 @@ from typing import Any, Iterable, List, Tuple
 
 import numpy as np
 
+DEFAULT_CORNER_MIN_SHARPNESS = 0.15
+DEFAULT_CORNER_MIN_SPACING_M = 0.36
+DEFAULT_EFFECTIVE_CORNER_MAX_COUNT = 8
+DEFAULT_CORNER_MASK_MAX_FRACTION = 0.18
+
 
 @dataclass(frozen=True)
 class LightPaintRef:
@@ -29,23 +34,26 @@ class LightPaintRef:
     segment_lengths: np.ndarray = field(init=False)
     duration: float = field(init=False)
     length: float = field(init=False)
+    waypoint_times: np.ndarray = field(init=False)
     corner_times: np.ndarray = field(init=False)
+    corner_indices: np.ndarray = field(init=False)
+    corner_sharpness: np.ndarray = field(init=False)
 
     def __post_init__(self) -> None:
         pts_raw = np.asarray(self.waypoints, dtype=np.float32)
         pts = pts_raw
         if pts.ndim != 2 or pts.shape[1] != 3:
-            raise ValueError("waypoints must have shape (N, 3)")
+            raise ValueError("waypoints는 shape (N, 3)이어야 합니다")
         if len(pts) < 2:
-            raise ValueError("at least two waypoints are required")
+            raise ValueError("waypoints는 최소 2개 이상 필요합니다")
         if self.speed <= 0.0:
-            raise ValueError("speed must be positive")
+            raise ValueError("speed는 0보다 커야 합니다")
         if self.segment_led is None:
             raw_led = np.ones(len(pts) - 1, dtype=np.float32)
         else:
             raw_led = np.asarray(self.segment_led, dtype=np.float32).reshape(-1)
             if raw_led.shape != (len(pts) - 1,):
-                raise ValueError("segment_led must have shape (N-1,)")
+                raise ValueError("segment_led는 shape (N-1,)이어야 합니다")
             raw_led = np.clip(raw_led, 0.0, 1.0)
 
         keep = [0]
@@ -58,13 +66,15 @@ class LightPaintRef:
                 last_kept_raw = i
         pts = pts[keep]
         if len(pts) < 2:
-            raise ValueError("waypoints collapse to a single point")
+            raise ValueError("waypoints가 하나의 점으로 축약되었습니다")
         seg_led = np.asarray(led_keep, dtype=np.float32)
 
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1).astype(np.float32)
         cum = np.concatenate([[0.0], np.cumsum(seg)]).astype(np.float32)
         length = float(cum[-1])
         duration = length / float(self.speed)
+        waypoint_times = (cum / float(self.speed)).astype(np.float32)
+        corner_indices, corner_sharpness = _detect_corner_indices(pts, cum)
 
         object.__setattr__(self, "waypoints", pts)
         object.__setattr__(self, "segment_led", seg_led)
@@ -72,7 +82,10 @@ class LightPaintRef:
         object.__setattr__(self, "cumlen", cum)
         object.__setattr__(self, "length", length)
         object.__setattr__(self, "duration", duration)
-        object.__setattr__(self, "corner_times", (cum / float(self.speed)).astype(np.float32))
+        object.__setattr__(self, "waypoint_times", waypoint_times)
+        object.__setattr__(self, "corner_times", waypoint_times[corner_indices].astype(np.float32))
+        object.__setattr__(self, "corner_indices", corner_indices)
+        object.__setattr__(self, "corner_sharpness", corner_sharpness)
 
     def _flat_times(self, t) -> Tuple[np.ndarray, bool, Tuple[int, ...]]:
         arr = np.asarray(t, dtype=np.float32)
@@ -139,6 +152,126 @@ class LightPaintRef:
     def future_positions(self, t0: float, count: int = 15, dt: float = 0.1) -> np.ndarray:
         times = float(t0) + np.arange(int(count), dtype=np.float32) * float(dt)
         return np.asarray(self.pos(times), dtype=np.float32)
+
+
+def _corner_sharpness_at(pts: np.ndarray, idx: int) -> float:
+    if len(pts) < 3 or idx <= 0 or idx >= len(pts) - 1:
+        return 0.0
+    a = pts[idx] - pts[idx - 1]
+    b = pts[idx + 1] - pts[idx]
+    na = float(np.linalg.norm(a))
+    nb = float(np.linalg.norm(b))
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
+    return float(np.clip((1.0 - cosang) * 0.5, 0.0, 1.0))
+
+
+def _detect_corner_indices(
+    pts: np.ndarray,
+    cumlen: np.ndarray,
+    *,
+    min_sharpness: float = DEFAULT_CORNER_MIN_SHARPNESS,
+    min_spacing_m: float = DEFAULT_CORNER_MIN_SPACING_M,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return internal waypoint indices whose heading change is a real corner."""
+    pts = np.asarray(pts, dtype=np.float32)
+    cumlen = np.asarray(cumlen, dtype=np.float32)
+    if len(pts) < 3:
+        return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.float32)
+    candidates: list[tuple[float, int]] = []
+    for idx in range(1, len(pts) - 1):
+        sharpness = _corner_sharpness_at(pts, idx)
+        if sharpness >= float(min_sharpness):
+            candidates.append((sharpness, idx))
+    kept: list[tuple[int, float]] = []
+    for sharpness, idx in sorted(candidates, reverse=True):
+        s = float(cumlen[idx])
+        if all(abs(s - float(cumlen[other_idx])) >= float(min_spacing_m) for other_idx, _ in kept):
+            kept.append((idx, sharpness))
+    kept.sort(key=lambda item: item[0])
+    return (
+        np.asarray([idx for idx, _ in kept], dtype=np.int32),
+        np.asarray([sharpness for _, sharpness in kept], dtype=np.float32),
+    )
+
+
+def effective_corner_indices(
+    pts: np.ndarray,
+    cumlen: np.ndarray,
+    *,
+    corner_indices: np.ndarray | None = None,
+    corner_sharpness: np.ndarray | None = None,
+    window_m: float = 0.18,
+    max_corners: int = DEFAULT_EFFECTIVE_CORNER_MAX_COUNT,
+) -> np.ndarray:
+    """Return the corner index set shared by reward, teacher, and metrics."""
+    pts = np.asarray(pts, dtype=np.float32)
+    cumlen = np.asarray(cumlen, dtype=np.float32)
+    if len(pts) < 3:
+        return np.zeros(0, dtype=np.int32)
+    if corner_indices is None:
+        indices, sharpness = _detect_corner_indices(pts, cumlen)
+    else:
+        indices = np.asarray(corner_indices, dtype=np.int32).reshape(-1)
+        if corner_sharpness is None:
+            sharpness = np.asarray([_corner_sharpness_at(pts, int(i)) for i in indices], dtype=np.float32)
+        else:
+            sharpness = np.asarray(corner_sharpness, dtype=np.float32).reshape(-1)
+            if sharpness.size != indices.size:
+                sharpness = np.asarray([_corner_sharpness_at(pts, int(i)) for i in indices], dtype=np.float32)
+    if indices.size <= 1:
+        return indices.astype(np.int32)
+    min_spacing = max(2.0 * float(window_m), DEFAULT_CORNER_MIN_SPACING_M)
+    order = sorted(range(indices.size), key=lambda i: float(sharpness[i]), reverse=True)
+    kept: list[int] = []
+    for rel_idx in order:
+        idx = int(indices[rel_idx])
+        s = float(cumlen[idx])
+        if all(abs(s - float(cumlen[int(indices[other_rel])])) >= min_spacing for other_rel in kept):
+            kept.append(rel_idx)
+    if int(max_corners) > 0 and len(kept) > int(max_corners):
+        kept = sorted(kept, key=lambda rel_idx: float(sharpness[rel_idx]), reverse=True)[: int(max_corners)]
+    kept.sort(key=lambda rel_idx: int(indices[rel_idx]))
+    return np.asarray([int(indices[rel_idx]) for rel_idx in kept], dtype=np.int32)
+
+
+def corner_window_radius_m(
+    cumlen: np.ndarray,
+    corner_indices: np.ndarray,
+    window_m: float,
+    *,
+    max_fraction: float = DEFAULT_CORNER_MASK_MAX_FRACTION,
+) -> float:
+    """Cap each corner window so dense letter paths cannot become all-corner."""
+    cumlen = np.asarray(cumlen, dtype=np.float32)
+    indices = np.asarray(corner_indices, dtype=np.int32).reshape(-1)
+    if indices.size == 0 or cumlen.size == 0:
+        return 0.0
+    length = float(cumlen[-1])
+    radius_m = min(
+        float(window_m),
+        length * float(max_fraction) / max(2.0 * float(indices.size), 1.0),
+    )
+    if indices.size > 1:
+        corner_s = cumlen[indices]
+        gaps = np.diff(corner_s)
+        if gaps.size:
+            radius_m = min(radius_m, max(0.45 * float(np.min(gaps)), 1e-6))
+    return float(max(radius_m, 0.0))
+
+
+def corner_distances_for_ref(ref: "LightPaintRef", window_m: float) -> np.ndarray:
+    indices = effective_corner_indices(
+        ref.waypoints,
+        ref.cumlen,
+        corner_indices=getattr(ref, "corner_indices", None),
+        corner_sharpness=getattr(ref, "corner_sharpness", None),
+        window_m=window_m,
+    )
+    if indices.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    return np.asarray(ref.cumlen[indices], dtype=np.float32)
 
 
 def make_waypoint_ref(
@@ -297,20 +430,20 @@ def _drawn_point_to_world(
         if len(vals) == 3:
             return np.asarray(vals, dtype=np.float32)
         if len(vals) != 2:
-            raise ValueError("world points must be [x,z], [x,y], or [x,y,z]")
+            raise ValueError("world points는 [x,z], [x,y], [x,y,z] 중 하나여야 합니다")
         if plane == "xz":
             return np.asarray([vals[0], fixed_y, vals[1]], dtype=np.float32)
         return np.asarray([vals[0], vals[1], fixed_z], dtype=np.float32)
 
     if len(vals) != 2:
-        raise ValueError(f"{coordinate_space} points must be 2-D")
+        raise ValueError(f"{coordinate_space} points는 2-D여야 합니다")
     if coordinate_space == "pixel":
         u = vals[0] / float(size - 1)
         v = vals[1] / float(size - 1)
     elif coordinate_space == "normalized":
         u, v = vals
     else:
-        raise ValueError("coordinate_space must be 'normalized', 'pixel', or 'world'")
+        raise ValueError("coordinate_space는 'normalized', 'pixel', 'world' 중 하나여야 합니다")
 
     u = float(np.clip(u, 0.0, 1.0))
     v = float(np.clip(v, 0.0, 1.0))
@@ -347,7 +480,7 @@ def make_drawn_path_ref(
     without painting unwanted lines.
     """
     if plane not in ("xz", "xy"):
-        raise ValueError("plane must be 'xz' or 'xy'")
+        raise ValueError("plane은 'xz' 또는 'xy'여야 합니다")
 
     all_points: List[np.ndarray] = []
     segment_led: List[float] = []
@@ -433,9 +566,10 @@ def load_drawn_path_ref(
     coordinate_space: str | None = None,
     width_m: float | None = None,
     height_m: float | None = None,
-    max_waypoints_per_stroke: int = 120,
-    smooth: bool = True,
-    smooth_window_m: float = 0.06,
+    path_scale: float | None = None,
+    max_waypoints_per_stroke: int | None = None,
+    smooth: bool | None = None,
+    smooth_window_m: float | None = None,
 ) -> LightPaintRef:
     """Load a user-drawn stroke JSON file and compile it into LightPaintRef."""
     json_path = Path(path)
@@ -443,23 +577,37 @@ def load_drawn_path_ref(
         data = json.load(f)
     strokes = data.get("strokes")
     if strokes is None:
-        raise ValueError("drawn path JSON must contain a 'strokes' list")
+        raise ValueError("drawn path JSON에는 'strokes' list가 필요합니다")
+    json_scale = data.get("path_scale", data.get("distance_scale", data.get("scale", 1.0)))
+    effective_scale = float(path_scale if path_scale is not None else json_scale)
+    if effective_scale <= 0.0:
+        raise ValueError("drawn path scale은 0보다 커야 합니다")
+    base_width_m = float(width_m if width_m is not None else data.get("width_m", 0.9))
+    base_height_m = float(height_m if height_m is not None else data.get("height_m", 0.9))
     return make_drawn_path_ref(
         strokes=strokes,
         plane=str(plane or data.get("plane", "xz")),
         coordinate_space=str(coordinate_space or data.get("coordinate_space", "normalized")),
         speed=float(speed if speed is not None else data.get("speed", 0.35)),
-        width_m=float(width_m if width_m is not None else data.get("width_m", 0.9)),
-        height_m=float(height_m if height_m is not None else data.get("height_m", 0.9)),
+        width_m=base_width_m * effective_scale,
+        height_m=base_height_m * effective_scale,
         center_x=float(data.get("center_x", 0.0)),
         center_y=float(data.get("center_y", 0.0)),
         center_z=float(data.get("center_z", 1.5)),
         fixed_y=float(data.get("fixed_y", 0.0)),
         fixed_z=float(data.get("fixed_z", 1.5)),
         size=int(data.get("size", 64)),
-        max_waypoints_per_stroke=int(data.get("max_waypoints_per_stroke", max_waypoints_per_stroke)),
-        smooth=bool(data.get("smooth", smooth)),
-        smooth_window_m=float(data.get("smooth_window_m", smooth_window_m)),
+        max_waypoints_per_stroke=int(
+            max_waypoints_per_stroke
+            if max_waypoints_per_stroke is not None
+            else data.get("max_waypoints_per_stroke", 120)
+        ),
+        smooth=bool(smooth if smooth is not None else data.get("smooth", True)),
+        smooth_window_m=float(
+            smooth_window_m
+            if smooth_window_m is not None
+            else data.get("smooth_window_m", 0.06)
+        ),
         connect_strokes=bool(data.get("connect_strokes", True)),
         name=str(data.get("name", json_path.stem)),
     )
@@ -578,9 +726,9 @@ def make_letter_ref(
 ) -> LightPaintRef:
     """Create a text-mask reference in either x-z or fixed-z x-y plane."""
     if len(str(letter)) < 1 or not any(ch.isalpha() for ch in str(letter)):
-        raise ValueError("letter must contain at least one alphabetic character")
+        raise ValueError("letter에는 알파벳 문자가 최소 1개 필요합니다")
     if plane not in ("xz", "xy"):
-        raise ValueError("plane must be 'xz' or 'xy'")
+        raise ValueError("plane은 'xz' 또는 'xy'여야 합니다")
 
     from src.env.letter_masks import render_letter
 

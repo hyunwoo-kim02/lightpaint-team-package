@@ -30,14 +30,9 @@ _PKG_ROOT = _HERE.parent.parent
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB
-from src.env.lightpaint_ref import (
-    LightPaintRef,
-    load_drawn_path_ref,
-    make_letter_ref,
-    make_square_ref,
-)
+from src.env.lightpaint_ref import LightPaintRef
 from src.render.pybullet_snapshot import capture_pybullet_snapshot
+from src.train.reference_factory import add_reference_args, build_reference_from_args
 from src.train.visualize_flight import save_phase_a_visualization
 
 
@@ -53,55 +48,25 @@ def _safe_token(value: str) -> str:
 
 
 def _build_reference(args: argparse.Namespace) -> tuple[str, LightPaintRef | None]:
-    if args.trajectory == "square":
-        ref = make_square_ref(
-            side_m=float(args.square_side),
-            center_x=0.0,
-            center_z=1.5,
-            speed=float(args.speed),
-        )
-        return "square", ref
-    if args.trajectory == "drawn":
-        if args.drawn_path is None:
-            raise ValueError("--trajectory drawn requires --drawn-path")
-        ref = load_drawn_path_ref(
-            path=args.drawn_path,
-            speed=float(args.speed),
-            plane=str(args.drawn_plane),
-            coordinate_space=str(args.drawn_space),
-            width_m=float(args.width_m),
-            height_m=float(args.height_m),
-            max_waypoints_per_stroke=int(args.max_waypoints),
-            smooth=not bool(args.no_smooth_ref),
-            smooth_window_m=float(args.smooth_window_m),
-        )
-        return Path(args.drawn_path).stem, ref
-    label = args.label if args.label is not None else "L"
-    ref = make_letter_ref(
-        letter=str(label),
-        plane=str(args.letter_plane),
-        speed=float(args.speed),
-        width_m=float(args.width_m),
-        height_m=float(args.height_m),
-        center_x=0.0,
-        center_z=1.5,
-        fixed_y=0.0,
-        fixed_z=1.5,
-        max_waypoints=int(args.max_waypoints),
-        smooth=not bool(args.no_smooth_ref),
-        smooth_window_m=float(args.smooth_window_m),
-    )
-    return str(label), ref
+    built = build_reference_from_args(args)
+    return built.label, built.reference
 
 
 def _corner_errors(ref: LightPaintRef, time_arr: np.ndarray, pos_arr: np.ndarray) -> list[dict]:
     rows: list[dict] = []
-    for idx, (corner_time, corner_pos) in enumerate(zip(ref.corner_times, ref.waypoints)):
+    corner_indices = getattr(ref, "corner_indices", None)
+    if corner_indices is None:
+        indices = np.arange(len(ref.waypoints), dtype=np.int32)
+    else:
+        indices = np.asarray(corner_indices, dtype=np.int32)
+    for idx in indices:
+        corner_time = float(ref.cumlen[int(idx)] / max(float(ref.speed), 1e-6))
+        corner_pos = ref.waypoints[int(idx)]
         nearest = int(np.argmin(np.abs(time_arr - float(corner_time))))
         actual = pos_arr[nearest]
         err = float(np.linalg.norm(actual - corner_pos))
         rows.append({
-            "corner_index": idx,
+            "corner_index": int(idx),
             "target_time_s": float(corner_time),
             "sample_step": nearest,
             "sample_time_s": float(time_arr[nearest]),
@@ -231,22 +196,26 @@ def main(args: argparse.Namespace) -> int:
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"[phase_a] trajectory={args.trajectory} label={label!r} wind_mode={wind_mode} "
-        f"seed={seed} max_steps={max_steps}",
+        f"[phase_a] 기준경로={args.trajectory} label={label!r} 외란={wind_mode} "
+        f"seed={seed} max_steps={max_steps} gui={bool(args.gui)}",
         flush=True,
     )
+    if bool(args.gui):
+        print("[phase_a] PyBullet GUI를 켠 상태로 실행합니다. rollout 속도가 느려질 수 있습니다.", flush=True)
     if reference is not None:
         print(
-            f"[phase_a] ref={reference.name} length={reference.length:.3f}m "
-            f"duration={reference.duration:.3f}s speed={reference.speed:.3f}m/s",
+            f"[phase_a] reference={reference.name} 길이={reference.length:.3f}m "
+            f"기준시간={reference.duration:.3f}s 속도={reference.speed:.3f}m/s",
             flush=True,
         )
+
+    from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB
 
     env = LightPaintAviaryPyB(
         label=label,
         phase="A",
         wind_mode=wind_mode,
-        gui=False,
+        gui=bool(args.gui),
         init_box_size=float(args.init_box_size),
         led_always_on=bool(args.led_always_on),
         max_episode_steps=max_steps,
@@ -254,7 +223,7 @@ def main(args: argparse.Namespace) -> int:
     )
     target_mask = env.G_letter.copy()
     target_px = max(int(target_mask.sum()), 1)
-    print(f"[phase_a] target_px={target_px}", flush=True)
+    print(f"[phase_a] target pixel 수={target_px}", flush=True)
 
     obs, info = env.reset(seed=seed)
     pos_list: list = [info["pos"]]
@@ -270,7 +239,7 @@ def main(args: argparse.Namespace) -> int:
     try:
         snapshots.append((0, capture_pybullet_snapshot(env.CLIENT)))
     except Exception as exc:
-        print(f"[phase_a] snapshot capture skipped: {exc}", flush=True)
+        print(f"[phase_a] snapshot 캡처를 건너뜁니다: {exc}", flush=True)
 
     stride = max(1, int(args.snapshot_stride))
     for k in range(max_steps):
@@ -312,7 +281,7 @@ def main(args: argparse.Namespace) -> int:
     crash = bool(term)
 
     print(
-        f"[phase_a] DONE: steps={len(rewards)} walltime={walltime:.2f}s "
+        f"[phase_a] 완료: steps={len(rewards)} walltime={walltime:.2f}s "
         f"tracking_rmse={rmse:.4f} max_err={max_err:.4f} "
         f"corner_max={corner_max:.4f} crash={crash}",
         flush=True,
@@ -353,11 +322,11 @@ def main(args: argparse.Namespace) -> int:
             f"{coverage:.6f}", painted_px_total, int(crash),
         ])
 
-    print(f"[phase_a] trajectory CSV: {traj_path}", flush=True)
+    print(f"[phase_a] trajectory CSV 저장 위치: {traj_path}", flush=True)
     if corner_rows:
-        print(f"[phase_a] corner CSV: {corner_path}", flush=True)
-    print(f"[phase_a] metrics CSV: {metrics_path}", flush=True)
-    print(f"[phase_a] tracking plot: {tracking_plot_path}", flush=True)
+        print(f"[phase_a] corner CSV 저장 위치: {corner_path}", flush=True)
+    print(f"[phase_a] metrics CSV 저장 위치: {metrics_path}", flush=True)
+    print(f"[phase_a] tracking plot 저장 위치: {tracking_plot_path}", flush=True)
 
     paths = save_phase_a_visualization(
         pos_list=pos_list,
@@ -375,7 +344,7 @@ def main(args: argparse.Namespace) -> int:
         ref_pos_list=ref_list,
         snapshots=snapshots,
     )
-    print(f"[phase_a] visualization paths: {paths}", flush=True)
+    print(f"[phase_a] 시각화 산출물: {paths}", flush=True)
 
     env.close()
     return 0
@@ -383,36 +352,13 @@ def main(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Phase A PID-only sanity run.")
-    parser.add_argument("--trajectory", choices=("square", "letter", "drawn"), default="square",
-                        help="Trajectory source for the PID gate.")
-    parser.add_argument("--label", default=None,
-                        help="Text label for --trajectory letter. Defaults to 'L'.")
+    add_reference_args(parser)
     parser.add_argument("--wind-mode", default="M0",
                         help="Wind mode. Phase A enforces M0.")
     parser.add_argument("--max-steps", type=int, default=None,
                         help="Episode horizon. Defaults to reference duration plus settle time.")
     parser.add_argument("--speed", type=float, default=0.35,
                         help="Reference speed in m/s for waypoint trajectories.")
-    parser.add_argument("--square-side", type=float, default=0.8,
-                        help="Square side length in meters.")
-    parser.add_argument("--letter-plane", choices=("xz", "xy"), default="xz",
-                        help="Plane used when --trajectory letter is selected.")
-    parser.add_argument("--drawn-path", type=str, default=None,
-                        help="JSON path exported by tools/draw_path.html or another stroke editor.")
-    parser.add_argument("--drawn-plane", choices=("xz", "xy"), default="xz",
-                        help="Plane used when --trajectory drawn is selected.")
-    parser.add_argument("--drawn-space", choices=("normalized", "pixel", "world"), default="normalized",
-                        help="Coordinate space for drawn JSON points.")
-    parser.add_argument("--width-m", type=float, default=0.9,
-                        help="Letter reference width in meters.")
-    parser.add_argument("--height-m", type=float, default=0.9,
-                        help="Letter reference height in meters.")
-    parser.add_argument("--max-waypoints", type=int, default=240,
-                        help="Maximum smooth reference waypoints for letter trajectories.")
-    parser.add_argument("--smooth-window-m", type=float, default=0.08,
-                        help="Smoothing window in meters for image-derived letter references.")
-    parser.add_argument("--no-smooth-ref", action="store_true",
-                        help="Use raw skeleton waypoints for letter trajectories.")
     parser.add_argument("--settle-time", type=float, default=2.0,
                         help="Extra seconds after the reference endpoint for settling.")
     parser.add_argument("--init-box-size", type=float, default=0.02,
@@ -421,6 +367,8 @@ def parse_args() -> argparse.Namespace:
                         help="PyBullet camera snapshot stride in env steps.")
     parser.add_argument("--led-always-on", action="store_true",
                         help="Force LED on for visualization instead of scripted target-mask LED.")
+    parser.add_argument("--gui", action=argparse.BooleanOptionalAction, default=False,
+                        help="PyBullet GUI 창을 띄웁니다. 기본값은 off입니다.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for env reset.")
     parser.add_argument("--output-dir", type=str, default=None,

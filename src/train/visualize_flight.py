@@ -80,7 +80,7 @@ def save_phase_a_visualization(
     The mp4 and gif are both produced from the same frame set and contain the
     full simulation start-to-end. Returns a dict with the actual artifact paths.
     """
-    from src.env.light_paint_aviary_pyb import (
+    from src.env.lightpaint_geometry import (
         X_MIN, X_MAX, Z_MIN, Z_MAX,
         world_to_pixel, LED_STAMP_RADIUS_PX,
     )
@@ -140,7 +140,7 @@ def save_phase_a_visualization(
     plt.tight_layout()
     plt.savefig(str(png_3d), dpi=120, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
-    print(f"{log_prefix} 3D PNG saved: {png_3d}", flush=True)
+    print(f"{log_prefix} 3D PNG 저장 위치: {png_3d}", flush=True)
 
     # ---------- Per-frame snapshots ----------
     has_drone_view = snapshots is not None and len(snapshots) > 0
@@ -251,7 +251,7 @@ def save_phase_a_visualization(
         plt.savefig(str(frame_path), dpi=80, bbox_inches="tight", facecolor=fig.get_facecolor())
         plt.close(fig)
         n_frames += 1
-    print(f"{log_prefix} {n_frames} frame PNGs saved to: {frames_dir} (drone_view={has_drone_view})",
+    print(f"{log_prefix} frame PNG {n_frames}개 저장 위치: {frames_dir} (drone_view={has_drone_view})",
           flush=True)
 
     # ---------- mp4 mux (full simulation start-to-end) ----------
@@ -274,9 +274,9 @@ def save_phase_a_visualization(
             writer.append_data(frame[:h_even, :w_even, :])
         writer.close()
         written_mp4 = True
-        print(f"{log_prefix} mp4 saved: {mp4_path}", flush=True)
+        print(f"{log_prefix} mp4 저장 위치: {mp4_path}", flush=True)
     except Exception as e_mp4:
-        print(f"{log_prefix} mp4 write failed ({e_mp4})", flush=True)
+        print(f"{log_prefix} mp4 저장 실패: {e_mp4}", flush=True)
 
     # ---------- GIF mux (always, sibling of mp4) ----------
     try:
@@ -291,9 +291,9 @@ def save_phase_a_visualization(
         # duration in seconds per frame; loop=0 = infinite
         imageio.mimsave(str(gif_path), arrs, duration=max(0.05, 1.0 / fps), loop=0)
         written_gif = True
-        print(f"{log_prefix} GIF saved: {gif_path} ({len(sel)} frames)", flush=True)
+        print(f"{log_prefix} GIF 저장 위치: {gif_path} ({len(sel)} frames)", flush=True)
     except Exception as e_gif:
-        print(f"{log_prefix} GIF write failed: {e_gif}", flush=True)
+        print(f"{log_prefix} GIF 저장 실패: {e_gif}", flush=True)
 
     # ---------- Summary figure ----------
     summary_path = out_dir / f"{phase_prefix}_{safe_label}_{wind_mode}_summary.png"
@@ -311,9 +311,9 @@ def save_phase_a_visualization(
             out_path=summary_path,
             phase_display_name=phase_display_name,
         )
-        print(f"{log_prefix} summary figure saved: {summary_path}", flush=True)
+        print(f"{log_prefix} summary figure 저장 위치: {summary_path}", flush=True)
     except Exception as e_sum:
-        print(f"{log_prefix} summary figure failed: {e_sum}", flush=True)
+        print(f"{log_prefix} summary figure 저장 실패: {e_sum}", flush=True)
 
     # ---------- Reference-path diagnostic figure ----------
     refpath_path = out_dir / f"{phase_prefix}_{safe_label}_{wind_mode}_refpath.png"
@@ -330,9 +330,9 @@ def save_phase_a_visualization(
                 out_path=refpath_path,
                 phase_display_name=phase_display_name,
             )
-            print(f"{log_prefix} refpath figure saved: {refpath_path}", flush=True)
+            print(f"{log_prefix} refpath figure 저장 위치: {refpath_path}", flush=True)
         except Exception as e_ref:
-            print(f"{log_prefix} refpath figure failed: {e_ref}", flush=True)
+            print(f"{log_prefix} refpath figure 저장 실패: {e_ref}", flush=True)
 
     return {
         "png_3d": str(png_3d),
@@ -359,7 +359,7 @@ def save_phase_a_summary(
     phase_display_name: str = "Phase A",
 ) -> None:
     """Produce phase_a_<label>_<wind_mode>_summary.png — single 4-panel figure."""
-    from src.env.light_paint_aviary_pyb import X_MIN, X_MAX, Z_MIN, Z_MAX
+    from src.env.lightpaint_geometry import X_MIN, X_MAX, Z_MIN, Z_MAX
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 9))
     fig.patch.set_facecolor("#111111")
@@ -499,7 +499,7 @@ def save_reference_path_diagnostic(
       [2] arc-length traversed vs simulation step — shows V_REF=0.5 m/s ramp
           and final clamp at total_len.
     """
-    from src.env.light_paint_aviary_pyb import (
+    from src.env.lightpaint_geometry import (
         X_MIN, X_MAX, Z_MIN, Z_MAX, V_REF, DT,
     )
 
@@ -612,7 +612,8 @@ def save_reference_path_diagnostic(
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
-from src.env.light_paint_aviary_standalone import LightPaintAviaryW1, X_MIN, X_MAX, Z_MIN, Z_MAX
+from src.env.lightpaint_geometry import X_MIN, X_MAX, Z_MIN, Z_MAX, world_to_pixel, LED_STAMP_RADIUS_PX
+from src.env.light_paint_aviary_standalone import LightPaintAviaryW1
 
 # Maximum steps per eval episode
 MAX_EVAL_STEPS = 600
@@ -659,7 +660,6 @@ def run_eval_episode(
 
         # Stamp paint
         if led_on:
-            from src.env.light_paint_aviary_pyb import world_to_pixel, LED_STAMP_RADIUS_PX
             col, row = world_to_pixel(float(pos[0]), float(pos[2]))
             r = LED_STAMP_RADIUS_PX
             for dr in range(-r, r + 1):
@@ -753,7 +753,7 @@ def save_3d_flight_png(
     plt.savefig(str(out_path), dpi=120, bbox_inches="tight",
                 facecolor=fig.get_facecolor())
     plt.close(fig)
-    print(f"[viz] 3D PNG saved: {out_path}", flush=True)
+    print(f"[viz] 3D PNG 저장 위치: {out_path}", flush=True)
 
 
 def save_frame_snapshots(
@@ -782,7 +782,6 @@ def save_frame_snapshots(
         pos = pos_list[t]
         led_on = led_list[t]
         if led_on:
-            from src.env.light_paint_aviary_pyb import world_to_pixel, LED_STAMP_RADIUS_PX
             col, row = world_to_pixel(float(pos[0]), float(pos[2]))
             r = LED_STAMP_RADIUS_PX
             for dr in range(-r, r + 1):
@@ -831,7 +830,7 @@ def save_frame_snapshots(
         plt.close(fig)
         frame_count += 1
 
-    print(f"[viz] Saved {frame_count} frame snapshots to {frames_dir}", flush=True)
+    print(f"[viz] frame snapshot {frame_count}개 저장 위치: {frames_dir}", flush=True)
     return frame_count
 
 
@@ -843,7 +842,7 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
     """
     frame_paths = sorted(frames_dir.glob("frame_*.png"))
     if len(frame_paths) == 0:
-        print("[viz] No frames found for mp4 mux", flush=True)
+        print("[viz] mp4 생성에 사용할 frame이 없습니다.", flush=True)
         return False
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -867,11 +866,11 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
             writer.append_data(frame)
         writer.close()
         duration = len(frame_paths) / fps
-        print(f"[viz] mp4 saved: {out_path} ({len(frame_paths)} frames, {duration:.1f}s)",
+        print(f"[viz] mp4 저장 위치: {out_path} ({len(frame_paths)} frames, {duration:.1f}s)",
               flush=True)
         return True
     except Exception as e_mp4:
-        print(f"[viz] mp4 failed ({e_mp4}), trying GIF fallback...", flush=True)
+        print(f"[viz] mp4 저장 실패: {e_mp4}. GIF fallback을 시도합니다.", flush=True)
 
     # GIF fallback
     try:
@@ -883,10 +882,10 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
         if out_path.exists():
             out_path.unlink()
         gif_path.rename(out_path)
-        print(f"[viz] GIF fallback saved as {out_path} ({len(frames_arr)} frames)", flush=True)
+        print(f"[viz] GIF fallback 저장 위치: {out_path} ({len(frames_arr)} frames)", flush=True)
         return True
     except Exception as e_gif:
-        print(f"[viz] GIF fallback also failed: {e_gif}", flush=True)
+        print(f"[viz] GIF fallback도 실패했습니다: {e_gif}", flush=True)
         return False
 
 
@@ -907,10 +906,10 @@ def main(args: argparse.Namespace) -> None:
         if alt.is_file():
             model_path = alt
         else:
-            raise FileNotFoundError(f"Model not found: {model_path}")
+            raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
 
-    print(f"[viz] Loading model: {model_path}", flush=True)
-    print(f"[viz] Letter: {letter}, Wind: {wind}", flush=True)
+    print(f"[viz] 모델을 불러옵니다: {model_path}", flush=True)
+    print(f"[viz] 글자={letter}, 외란={wind}", flush=True)
 
     # Build single-env DummyVecEnv (NOT SubprocVecEnv for eval)
     def _make_eval_env() -> Monitor:
@@ -921,16 +920,16 @@ def main(args: argparse.Namespace) -> None:
     eval_env = DummyVecEnv([_make_eval_env])
     PPO = _lazy_import_ppo()
     model = PPO.load(str(model_path), env=eval_env)
-    print("[viz] Model loaded successfully", flush=True)
+    print("[viz] 모델 로드 완료", flush=True)
 
     # Run eval episode
-    print("[viz] Running deterministic rollout (1 episode)...", flush=True)
+    print("[viz] deterministic rollout을 1 episode 실행합니다.", flush=True)
     data = run_eval_episode(model, _make_eval_env, seed=42)
     pos_list = data["pos_list"]
     led_list = data["led_list"]
     cumulative = data["cumulative"]
     target_mask = data["target_mask"]
-    print(f"[viz] Episode: {len(pos_list)} steps, "
+    print(f"[viz] episode 결과: {len(pos_list)} steps, "
           f"LED on {sum(led_list)}/{len(led_list)} steps, "
           f"painted {int(cumulative.sum())}px", flush=True)
 
@@ -950,7 +949,7 @@ def main(args: argparse.Namespace) -> None:
     mp4_ok = save_mp4(frames_dir, mp4_path, fps=min(FRAME_FPS, max(1, n_frames // 10)))
 
     # Summary
-    print(f"\n[viz] DONE:", flush=True)
+    print(f"\n[viz] 완료:", flush=True)
     print(f"  3D PNG:   {png_3d}", flush=True)
     print(f"  Frames:   {frames_dir} ({n_frames} files)", flush=True)
     print(f"  mp4:      {mp4_path} (ok={mp4_ok})", flush=True)

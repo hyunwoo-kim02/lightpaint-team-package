@@ -18,6 +18,7 @@ p = pytest.importorskip("pybullet")
 pytest.importorskip("gym_pybullet_drones")
 
 from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB
+from src.env.lightpaint_geometry import Y_BOUND_M, Y_CANVAS
 from src.env.lightpaint_ref import make_square_ref
 from src.render.pybullet_snapshot import capture_pybullet_snapshot
 
@@ -85,6 +86,24 @@ def test_square_reference_drives_time_indexed_pid_target():
         assert later_ref[0] > first_ref[0]
         assert info["ref_name"] == "square"
         assert "v_ref" in info and len(info["v_ref"]) == 3
+    finally:
+        env.close()
+
+
+def test_reset_seed_resamples_initial_noise():
+    ref = make_square_ref(side_m=0.8, speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="square",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.05,
+    )
+    try:
+        _, info_1 = env.reset(seed=1)
+        _, info_2 = env.reset(seed=2)
+        assert not np.allclose(info_1["pos"], info_2["pos"])
     finally:
         env.close()
 
@@ -223,6 +242,15 @@ def test_phase_b_m1_disturbance_applies_world_frame_force(monkeypatch):
         _, kwargs = calls[-1]
         assert kwargs["flags"] == p.WORLD_FRAME
         assert np.linalg.norm(np.asarray(kwargs["forceObj"], dtype=np.float32)) > 0.0
+    finally:
+        env.close()
+
+
+def test_pyb_out_of_bounds_includes_y_canvas_latitude():
+    env = LightPaintAviaryPyB(label="L", phase="B", wind_mode="M0", max_episode_steps=5)
+    try:
+        assert env._is_out_of_bounds(np.array([0.0, Y_CANVAS + Y_BOUND_M + 0.01, 1.5], dtype=np.float32))
+        assert not env._is_out_of_bounds(np.array([0.0, Y_CANVAS + Y_BOUND_M - 0.01, 1.5], dtype=np.float32))
     finally:
         env.close()
 

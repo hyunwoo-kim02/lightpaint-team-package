@@ -26,12 +26,32 @@ def test_square_ref_contract_and_geometry():
     assert ref.waypoints.shape == (5, 3)
     assert np.isclose(ref.length, 3.2, atol=1e-6)
     assert np.isclose(ref.duration, 8.0, atol=1e-6)
-    assert ref.corner_times.shape == (5,)
+    assert ref.waypoint_times.shape == (5,)
+    assert ref.corner_times.shape == (3,)
+    np.testing.assert_array_equal(ref.corner_indices, np.array([1, 2, 3], dtype=np.int32))
+    np.testing.assert_allclose(ref.corner_times, ref.waypoint_times[ref.corner_indices], atol=1e-6)
 
     np.testing.assert_allclose(ref.pos(0.0), [-0.4, 0.0, 1.1], atol=1e-6)
     np.testing.assert_allclose(ref.pos(ref.duration), [-0.4, 0.0, 1.1], atol=1e-6)
     np.testing.assert_allclose(ref.vel(ref.duration + 0.1), [0.0, 0.0, 0.0], atol=1e-6)
     assert float(ref.yaw(0.0)) == 0.0
+
+
+def test_straight_ref_has_no_sharp_corners():
+    ref = LightPaintRef(
+        waypoints=np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [0.2, 0.0, 1.0],
+                [0.4, 0.0, 1.0],
+                [0.6, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        speed=0.3,
+    )
+
+    assert ref.corner_indices.size == 0
 
 
 def test_square_ref_vectorized_future_positions():
@@ -125,3 +145,72 @@ def test_load_drawn_path_ref_from_json(tmp_path):
     assert ref.plane == "xz"
     assert ref.duration > 0.0
     assert np.all(ref.segment_led == 1.0)
+
+
+def test_load_drawn_path_ref_applies_json_path_scale(tmp_path):
+    path = tmp_path / "drawn_scaled.json"
+    path.write_text(
+        json.dumps({
+            "name": "scaled_drawn",
+            "coordinate_space": "normalized",
+            "plane": "xz",
+            "width_m": 0.5,
+            "height_m": 0.5,
+            "path_scale": 2.0,
+            "strokes": [
+                {"points": [[0.0, 0.0], [1.0, 0.0]], "led": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    ref = load_drawn_path_ref(path, speed=0.25, smooth=False)
+    assert ref.name == "scaled_drawn"
+    assert np.isclose(ref.length, 1.0, atol=1e-6)
+
+
+def test_load_drawn_path_ref_cli_path_scale_overrides_json_scale(tmp_path):
+    path = tmp_path / "drawn_scaled_override.json"
+    path.write_text(
+        json.dumps({
+            "name": "scaled_override_drawn",
+            "coordinate_space": "normalized",
+            "plane": "xz",
+            "width_m": 0.5,
+            "height_m": 0.5,
+            "path_scale": 2.0,
+            "strokes": [
+                {"points": [[0.0, 0.0], [1.0, 0.0]], "led": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    ref = load_drawn_path_ref(path, speed=0.25, path_scale=0.5, smooth=False)
+    assert np.isclose(ref.length, 0.25, atol=1e-6)
+
+
+def test_load_drawn_path_ref_explicit_args_override_json_smoothing(tmp_path):
+    path = tmp_path / "drawn_json_smoothing.json"
+    points = [[float(i) / 9.0, 0.0] for i in range(10)]
+    path.write_text(
+        json.dumps({
+            "name": "json_smoothing",
+            "coordinate_space": "normalized",
+            "plane": "xz",
+            "max_waypoints_per_stroke": 2,
+            "smooth": True,
+            "smooth_window_m": 0.2,
+            "strokes": [{"points": points, "led": True}],
+        }),
+        encoding="utf-8",
+    )
+
+    ref = load_drawn_path_ref(
+        path,
+        speed=0.25,
+        max_waypoints_per_stroke=5,
+        smooth=False,
+    )
+
+    assert ref.waypoints.shape[0] == 5

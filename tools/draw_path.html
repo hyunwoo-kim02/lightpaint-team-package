@@ -126,6 +126,9 @@
         <input id="height" type="number" value="0.9" step="0.05" min="0.1">
       </label>
     </div>
+    <label>path_scale
+      <input id="pathScale" type="number" value="1.0" step="0.1" min="0.05">
+    </label>
     <label>
       <span><input id="led" type="checkbox" checked> LED on for next stroke</span>
     </label>
@@ -201,6 +204,7 @@
         plane: document.getElementById("plane").value,
         width_m: Number(document.getElementById("width").value || 0.9),
         height_m: Number(document.getElementById("height").value || 0.9),
+        path_scale: Number(document.getElementById("pathScale").value || 1.0),
         center_x: 0.0,
         center_z: 1.5,
         connect_strokes: true,

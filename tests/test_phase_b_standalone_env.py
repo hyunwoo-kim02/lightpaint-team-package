@@ -12,6 +12,7 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 from src.env.light_paint_aviary_standalone import LightPaintAviaryW1
+from src.env.lightpaint_geometry import Y_BOUND_M, Y_CANVAS
 
 
 def test_phase_b_action_space_and_zero_action_smoke():
@@ -53,6 +54,13 @@ def test_phase_b_action_space_and_zero_action_smoke():
     assert info["brightness"] == pytest.approx(info["led_ref"])
 
 
+def test_standalone_letter_corner_set_is_sparse():
+    for label in ("L", "DG", "CAT", "Pig", "RL"):
+        env = LightPaintAviaryW1(label=label, phase="B", wind_mode="M0", init_box_size=0.0)
+        assert len(env._corner_indices) <= 8
+        env.close()
+
+
 def test_phase_b_nonzero_action_affects_velocity_and_led():
     env = LightPaintAviaryW1(
         label="L",
@@ -91,6 +99,15 @@ def test_phase_b_m2_disturbance_smoke():
     assert info["wind_frame"] == "WORLD_FRAME"
     assert np.isfinite(info["r"])
     assert "r_path" in info and "r_led_off" in info
+
+
+def test_standalone_out_of_bounds_includes_y_canvas_latitude():
+    env = LightPaintAviaryW1(label="L", phase="B", wind_mode="M0", init_box_size=0.0)
+    try:
+        assert env._is_out_of_bounds(np.array([0.0, Y_CANVAS + Y_BOUND_M + 0.01, 1.5], dtype=np.float32))
+        assert not env._is_out_of_bounds(np.array([0.0, Y_CANVAS + Y_BOUND_M - 0.01, 1.5], dtype=np.float32))
+    finally:
+        env.close()
 
 
 def test_phase_b_half_brightness_does_not_paint_when_led_off():

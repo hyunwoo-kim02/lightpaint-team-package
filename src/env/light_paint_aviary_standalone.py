@@ -34,6 +34,32 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+from src.env.lightpaint_ref import corner_window_radius_m, effective_corner_indices
+from src.env.reward_config import (
+    CORNER_WINDOW_M,
+    LED_RESIDUAL_SCALE,
+    RESIDUAL_DELTA_MAX,
+    W_ACTION_MAG,
+    W_ACTION_RATE,
+    W_COMPLETION,
+    W_CORNER_ACCEL,
+    W_CORNER_DECEL,
+    W_CORNER_LATERAL,
+    W_CORNER_PATH,
+    W_CORNER_SPEED,
+    W_CORNER_TRACK,
+    W_FLICKER,
+    W_INCOMPLETE,
+    W_LED_FLICKER,
+    W_LED_MISS,
+    W_NEW_TARGET,
+    W_OFF_TARGET,
+    W_PATH,
+    W_REPAINT,
+    W_SCHEDULE,
+)
+from src.env.reward_terms import compute_lightpaint_reward, is_led_on, led_brightness_from_ref
+
 # --- SRS §5.1 normalization constants (transcribed from light_paint_aviary_v4.py) ---
 POS_NORM = 1.0   # divide position by 1.0 m
 VEL_NORM = 1.5   # divide velocity by 1.5 m/s
@@ -57,6 +83,7 @@ WIND_FORCE = {
 X_MIN, X_MAX = -1.0, 1.0
 Z_MIN, Z_MAX = 0.5, 2.5
 Y_CANVAS = 0.0   # canvas is in XZ plane at Y=0
+Y_BOUND_M = 0.45
 
 # --- Physics simulation constants ---
 GRAVITY = 9.81         # m/s^2
@@ -68,10 +95,8 @@ ANG_DAMP = 0.80        # angular velocity damping per step
 MAX_EPISODE_STEPS = 2000  # default episode horizon (overridable via env init)
 
 # --- Phase B residual scaling ---
-RESIDUAL_DELTA_MAX = 0.5  # m/s, applied as action × Δ_MAX in Phase B
 
 # --- Backwards-compat: legacy 'W0'..'W3' wind level → new 'M0'..'M3' wind mode ---
-LED_RESIDUAL_SCALE = 1.0
 
 _LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2", "W3": "M3"}
 
@@ -79,30 +104,7 @@ _LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2", "W3": "M3"}
 W_LED_ASYM_POS = 1.0   # reward for LED ON + on target pixel
 W_LED_ASYM_NEG = 0.1   # penalty for LED ON + off target pixel
 W_PROGRESS = 2.0       # weight for r_progress (anti-hover, alpha=1.0)
-W_FLICKER = 0.05       # penalty weight for LED flicker
-LAMBDA_SMOOTH = 0.4    # SimpleFlight Factor 3 weight
 GAMMA_SHAPE = 0.99     # Ng-1999 potential-based shaping discount
-PATH_SIGMA_M = 0.08
-SCHEDULE_SIGMA_M = 0.15
-W_PATH = 0.6
-W_SCHEDULE = 1.0
-W_NEW_TARGET = 1.2
-W_OFF_TARGET = 1.6
-W_REPAINT = 0.2
-W_ACTION_MAG = 0.8
-W_ACTION_RATE = 0.3
-W_LED_MISS = 1.2
-CORNER_WINDOW_M = 0.28
-CORNER_SPEED_FRACTION = 0.65
-CORNER_SIGMA_M = 0.08
-W_CORNER_SPEED = 16.0
-W_CORNER_TRACK = 0.25
-W_CORNER_PATH = 0.7
-W_CORNER_DECEL = 2.0
-W_CORNER_ACCEL = 2.5
-W_CORNER_LATERAL = 1.0
-W_COMPLETION = 3.0
-W_INCOMPLETE = 1.0
 
 # --- LED stamp constants ---
 LED_STAMP_RADIUS_PX = 1  # pixel radius for LED stamp in progress_mask
@@ -209,6 +211,7 @@ class LightPaintAviaryW1(gym.Env):
 
         # Build reference trajectory using connected-component ordering
         self._ref_waypoints, self._ref_cumlen = self._build_ref_trajectory()
+        self._corner_indices = self._resolve_corner_indices()
 
         # --- Composition: PID controller, wind generator, LED strategy ---
         from src.env.pid_controller import VelocityPID
@@ -245,6 +248,17 @@ class LightPaintAviaryW1(gym.Env):
         self._episode_step = 0
         self.cumulative = np.zeros((64, 64), dtype=np.float32)
         self._prev_pos = np.zeros(3, dtype=np.float32)
+
+    def _resolve_corner_indices(self) -> np.ndarray:
+        return effective_corner_indices(self._ref_waypoints, self._ref_cumlen, window_m=CORNER_WINDOW_M)
+
+    def _sparsify_corner_indices(self, indices: np.ndarray) -> np.ndarray:
+        return effective_corner_indices(
+            self._ref_waypoints,
+            self._ref_cumlen,
+            corner_indices=np.asarray(indices, dtype=np.int32),
+            window_m=CORNER_WINDOW_M,
+        )
 
     def _load_letter_mask(self) -> None:
         """
@@ -544,16 +558,17 @@ class LightPaintAviaryW1(gym.Env):
             return 0.0, 0.0, float("inf")
         seg_len = float(np.linalg.norm(pts[segment_idx + 1] - pts[segment_idx]))
         s_now = float(cum[segment_idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
-        corner_indices = np.arange(1, len(pts) - 1, dtype=np.int32)
+        corner_indices = np.asarray(getattr(self, "_corner_indices", []), dtype=np.int32)
         if corner_indices.size == 0:
             return 0.0, 0.0, float("inf")
         corner_s = cum[corner_indices]
         nearest_rel = int(np.argmin(np.abs(corner_s - s_now)))
         corner_idx = int(corner_indices[nearest_rel])
         corner_dist = float(abs(float(cum[corner_idx]) - s_now))
-        if corner_dist > CORNER_WINDOW_M:
+        radius_m = corner_window_radius_m(cum, corner_indices, CORNER_WINDOW_M)
+        if radius_m <= 0.0 or corner_dist > radius_m:
             return 0.0, 0.0, corner_dist
-        influence = (1.0 - corner_dist / max(CORNER_WINDOW_M, 1e-6)) ** 2
+        influence = (1.0 - corner_dist / max(radius_m, 1e-6)) ** 2
         sharpness = self._corner_sharpness_at_waypoint(corner_idx)
         return float(influence * sharpness), float(sharpness), corner_dist
 
@@ -594,6 +609,16 @@ class LightPaintAviaryW1(gym.Env):
             return False
         return bool(float(t) >= float(self._ref_cumlen[-1]) / max(V_REF, 1e-6))
 
+    def _is_out_of_bounds(self, pos: np.ndarray) -> bool:
+        pos_arr = np.asarray(pos, dtype=np.float32).reshape(3)
+        return bool(
+            pos_arr[2] < Z_MIN - 0.5
+            or pos_arr[2] > Z_MAX + 0.5
+            or pos_arr[0] < X_MIN - 0.8
+            or pos_arr[0] > X_MAX + 0.8
+            or abs(float(pos_arr[1]) - Y_CANVAS) > Y_BOUND_M
+        )
+
     def _compute_reward_phase_a(
         self,
         pos: np.ndarray,
@@ -616,100 +641,32 @@ class LightPaintAviaryW1(gym.Env):
         schedule_err = float(np.linalg.norm(pos - p_ref))
         path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
         corner_influence, corner_sharpness, corner_dist = self._corner_context(segment_idx, alpha)
-        r_path = W_PATH * float(np.exp(-((path_dist / PATH_SIGMA_M) ** 2)))
-        r_schedule = W_SCHEDULE * float(np.exp(-((schedule_err / SCHEDULE_SIGMA_M) ** 2)))
-        r_corner_track = W_CORNER_TRACK * corner_influence * float(
-            np.exp(-((schedule_err / CORNER_SIGMA_M) ** 2))
-        )
-        r_corner_path = W_CORNER_PATH * corner_influence * float(
-            np.exp(-((path_dist / CORNER_SIGMA_M) ** 2))
-        )
-        r_led_target = W_NEW_TARGET * float(new_target)
-        r_led_off = -W_OFF_TARGET * float(off_target)
-        r_repaint = -W_REPAINT * float(repaint)
-        r_led_miss = -W_LED_MISS * max(0.0, float(led_ref) - float(brightness))
-
-        du = u_final - prev_u_final
-        r_smooth = float(np.exp(-float(np.linalg.norm(du)))) * LAMBDA_SMOOTH
-        r_action_mag = -W_ACTION_MAG * float(np.dot(delta_u_rl, delta_u_rl))
-        if prev_delta_u_rl is not None:
-            delta_rate = delta_u_rl - prev_delta_u_rl
-            r_action_rate = -W_ACTION_RATE * float(np.dot(delta_rate, delta_rate))
-        else:
-            r_action_rate = 0.0
-        r_led_flicker = -W_FLICKER * abs(float(brightness) - float(prev_brightness))
         speed = float(np.linalg.norm(self._vel))
         ref_speed = V_REF
-        v_corner_limit = ref_speed * CORNER_SPEED_FRACTION
-        r_corner_speed = -W_CORNER_SPEED * corner_influence * max(0.0, speed - v_corner_limit) ** 2
         v_ref = self._interpolate_traj_velocity(float(self._episode_step) * DT * V_REF)
-        v_ref_norm = float(np.linalg.norm(v_ref))
-        if v_ref_norm > 1e-6:
-            v_ref_unit = v_ref / v_ref_norm
-            delta_along_ref = float(np.dot(delta_u_rl, v_ref_unit))
-            delta_lateral = delta_u_rl - delta_along_ref * v_ref_unit
-        else:
-            delta_along_ref = 0.0
-            delta_lateral = delta_u_rl
-        r_corner_decel = W_CORNER_DECEL * corner_influence * max(0.0, -delta_along_ref)
-        r_corner_accel = -W_CORNER_ACCEL * corner_influence * max(0.0, delta_along_ref)
-        r_corner_lateral = -W_CORNER_LATERAL * corner_influence * float(np.dot(delta_lateral, delta_lateral))
-        coverage = float(np.clip(coverage, 0.0, 1.0))
-        r_completion = (W_COMPLETION * coverage - W_INCOMPLETE * (1.0 - coverage)) if completion_due else 0.0
-        r_terminal = -100.0 if out_of_bounds else 0.0
-
-        total = (
-            r_path
-            + r_schedule
-            + r_led_target
-            + r_led_off
-            + r_repaint
-            + r_led_miss
-            + r_smooth
-            + r_action_mag
-            + r_action_rate
-            + r_led_flicker
-            + r_corner_track
-            + r_corner_path
-            + r_corner_speed
-            + r_corner_decel
-            + r_corner_accel
-            + r_corner_lateral
-            + r_completion
-            + r_terminal
+        return compute_lightpaint_reward(
+            path_dist=path_dist,
+            schedule_err=schedule_err,
+            led_ref=led_ref,
+            brightness=brightness,
+            new_target=float(new_target),
+            off_target=float(off_target),
+            repaint=float(repaint),
+            command=np.asarray(u_final, dtype=np.float32),
+            prev_command=np.asarray(prev_u_final, dtype=np.float32),
+            delta_v=delta_u_rl,
+            prev_delta_v=prev_delta_u_rl,
+            prev_brightness=prev_brightness,
+            corner_influence=corner_influence,
+            corner_sharpness=corner_sharpness,
+            corner_dist=corner_dist,
+            speed=speed,
+            ref_speed=ref_speed,
+            v_ref=v_ref,
+            coverage=coverage,
+            completion_due=completion_due,
+            out_of_bounds=out_of_bounds,
         )
-        return total, {
-            "r_path": r_path,
-            "r_schedule": r_schedule,
-            "r_track": r_path + r_schedule,
-            "r_led_target": r_led_target,
-            "r_led_off": r_led_off,
-            "r_repaint": r_repaint,
-            "r_led_miss": r_led_miss,
-            "r_led_scripted": r_led_target + r_led_off + r_repaint + r_led_miss,
-            "r_smooth": r_smooth,
-            "r_action_mag": r_action_mag,
-            "r_action_rate": r_action_rate,
-            "r_led_flicker": r_led_flicker,
-            "r_corner_track": r_corner_track,
-            "r_corner_path": r_corner_path,
-            "r_corner_speed": r_corner_speed,
-            "r_corner_decel": r_corner_decel,
-            "r_corner_accel": r_corner_accel,
-            "r_corner_lateral": r_corner_lateral,
-            "r_completion": r_completion,
-            "r_terminal": r_terminal,
-            "path_dist": path_dist,
-            "schedule_err": schedule_err,
-            "paint_coverage": coverage,
-            "corner_sharpness": corner_sharpness,
-            "corner_influence": corner_influence,
-            "corner_dist_m": corner_dist,
-            "corner_delta_v_along_ref": delta_along_ref,
-            "paint_new_target": float(new_target),
-            "paint_off_target": float(off_target),
-            "paint_repaint": float(repaint),
-        }
 
     def _apply_physics(self, u_final: np.ndarray, wind_force: np.ndarray) -> None:
         """
@@ -903,8 +860,8 @@ class LightPaintAviaryW1(gym.Env):
         else:
             led_ref = float(self.led_strategy.decide(self._pos, np.zeros(0, dtype=np.float32), self.G_letter))
         prev_brightness = float(self._prev_brightness)
-        brightness = float(np.clip(led_ref + delta_led, 0.0, 1.0))
-        led_on = brightness > 0.5
+        brightness = led_brightness_from_ref(led_ref, delta_led)
+        led_on = is_led_on(brightness)
 
         # 6. Stamp paint into cumulative mask
         paint_brightness = brightness if led_on else 0.0
@@ -916,12 +873,7 @@ class LightPaintAviaryW1(gym.Env):
         completion_due = bool(reference_done and not self._completion_reward_given)
 
         # 7. Termination check
-        out_of_bounds = (
-            self._pos[2] < Z_MIN - 0.5
-            or self._pos[2] > Z_MAX + 0.5
-            or self._pos[0] < X_MIN - 0.8
-            or self._pos[0] > X_MAX + 0.8
-        )
+        out_of_bounds = self._is_out_of_bounds(self._pos)
 
         # 8. Reward (phase-specific)
         if self.phase in ("A", "B"):

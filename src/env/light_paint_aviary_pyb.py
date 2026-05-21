@@ -41,7 +41,48 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 # CP-1 modules (engine-agnostic)
 from src.env.wind_modes import make_wind_mode
 from src.env.led_strategy import make_led_strategy
-from src.env.lightpaint_ref import LightPaintRef, smooth_waypoint_path
+from src.env.lightpaint_geometry import (
+    DT,
+    LED_STAMP_RADIUS_PX,
+    V_REF,
+    X_MAX,
+    X_MIN,
+    Y_BOUND_M,
+    Y_CANVAS,
+    Z_MAX,
+    Z_MIN,
+    pixel_to_world,
+    world_to_pixel,
+)
+from src.env.lightpaint_ref import (
+    LightPaintRef,
+    corner_window_radius_m,
+    effective_corner_indices,
+    smooth_waypoint_path,
+)
+from src.env.reward_config import (
+    CORNER_WINDOW_M,
+    LED_RESIDUAL_SCALE,
+    RESIDUAL_DELTA_MAX,
+    W_ACTION_MAG,
+    W_ACTION_RATE,
+    W_COMPLETION,
+    W_CORNER_ACCEL,
+    W_CORNER_DECEL,
+    W_CORNER_LATERAL,
+    W_CORNER_PATH,
+    W_CORNER_SPEED,
+    W_CORNER_TRACK,
+    W_INCOMPLETE,
+    W_LED_FLICKER,
+    W_LED_MISS,
+    W_NEW_TARGET,
+    W_OFF_TARGET,
+    W_PATH,
+    W_REPAINT,
+    W_SCHEDULE,
+)
+from src.env.reward_terms import compute_lightpaint_reward, is_led_on, led_brightness_from_ref
 
 
 # ----------------------------------------------------------------------
@@ -55,37 +96,12 @@ ANG_NORM = math.pi
 V_REF = 0.5          # m/s reference speed (SRS §5.5)
 DT = 1.0 / 30.0      # 30 Hz control frequency (matches BaseRLAviary ctrl_freq)
 N_FUTURE = 15
-RESIDUAL_DELTA_MAX = 0.5
-LED_RESIDUAL_SCALE = 1.0
 
 X_MIN, X_MAX = -1.0, 1.0
 Z_MIN, Z_MAX = 0.5, 2.5
 Y_CANVAS = 0.0
 
 LED_STAMP_RADIUS_PX = 1
-LAMBDA_SMOOTH = 0.4
-PATH_SIGMA_M = 0.08
-SCHEDULE_SIGMA_M = 0.15
-W_PATH = 0.6
-W_SCHEDULE = 1.0
-W_NEW_TARGET = 1.2
-W_OFF_TARGET = 1.6
-W_REPAINT = 0.2
-W_ACTION_MAG = 0.8
-W_ACTION_RATE = 0.3
-W_LED_MISS = 1.2
-W_LED_FLICKER = 0.05
-CORNER_WINDOW_M = 0.28
-CORNER_SPEED_FRACTION = 0.65
-CORNER_SIGMA_M = 0.08
-W_CORNER_SPEED = 16.0
-W_CORNER_TRACK = 0.25
-W_CORNER_PATH = 0.7
-W_CORNER_DECEL = 2.0
-W_CORNER_ACCEL = 2.5
-W_CORNER_LATERAL = 1.0
-W_COMPLETION = 3.0
-W_INCOMPLETE = 1.0
 
 MAX_EPISODE_STEPS_DEFAULT = 2000
 
@@ -161,6 +177,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 self._ref_waypoints,
                 segment_led=self.reference.segment_led,
             )
+        self._corner_indices = self._resolve_corner_indices()
 
         # --- Composition (engine-agnostic) ---
         self.wind = make_wind_mode(self.wind_mode, self._rng)
@@ -190,9 +207,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._completion_reward_given = False
 
         # --- Initial position at top of reference + noise ---
-        start = self._ref_waypoints[0] if len(self._ref_waypoints) else np.array([0, 0, 1.5])
-        noise = self._rng.uniform(-init_box_size, init_box_size, size=3).astype(np.float32)
-        init_xyz = np.array([[start[0] + noise[0], 0.0, start[2] + noise[2]]], dtype=np.float32)
+        init_xyz = self._sample_initial_xyz()
 
         # --- super().__init__ (PyBullet client + URDF) ---
         super().__init__(
@@ -224,6 +239,30 @@ class LightPaintAviaryPyB(BaseRLAviary):
     # ------------------------------------------------------------------
     # Phase dispatch hooks
     # ------------------------------------------------------------------
+    def _sample_initial_xyz(self) -> np.ndarray:
+        start = self._ref_waypoints[0] if len(self._ref_waypoints) else np.array([0, 0, 1.5])
+        noise = self._rng.uniform(-self.init_box_size, self.init_box_size, size=3).astype(np.float32)
+        return np.array([[start[0] + noise[0], 0.0, start[2] + noise[2]]], dtype=np.float32)
+
+    def _resolve_corner_indices(self) -> np.ndarray:
+        if self.reference is not None and hasattr(self.reference, "corner_indices"):
+            return effective_corner_indices(
+                self._ref_waypoints,
+                self._ref_cumlen,
+                corner_indices=np.asarray(self.reference.corner_indices, dtype=np.int32),
+                corner_sharpness=np.asarray(getattr(self.reference, "corner_sharpness", []), dtype=np.float32),
+                window_m=CORNER_WINDOW_M,
+            )
+        return effective_corner_indices(self._ref_waypoints, self._ref_cumlen, window_m=CORNER_WINDOW_M)
+
+    def _sparsify_corner_indices(self, indices: np.ndarray) -> np.ndarray:
+        return effective_corner_indices(
+            self._ref_waypoints,
+            self._ref_cumlen,
+            corner_indices=np.asarray(indices, dtype=np.int32),
+            window_m=CORNER_WINDOW_M,
+        )
+
     def _build_action_space(self, phase: str) -> spaces.Space:
         if phase == "A":
             return spaces.Box(low=0.0, high=0.0, shape=(0,), dtype=np.float32)
@@ -645,16 +684,17 @@ class LightPaintAviaryPyB(BaseRLAviary):
             return 0.0, 0.0, float("inf")
         seg_len = float(np.linalg.norm(pts[segment_idx + 1] - pts[segment_idx]))
         s_now = float(cum[segment_idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
-        corner_indices = np.arange(1, len(pts) - 1, dtype=np.int32)
+        corner_indices = np.asarray(getattr(self, "_corner_indices", []), dtype=np.int32)
         if corner_indices.size == 0:
             return 0.0, 0.0, float("inf")
         corner_s = cum[corner_indices]
         nearest_rel = int(np.argmin(np.abs(corner_s - s_now)))
         corner_idx = int(corner_indices[nearest_rel])
         corner_dist = float(abs(float(cum[corner_idx]) - s_now))
-        if corner_dist > CORNER_WINDOW_M:
+        radius_m = corner_window_radius_m(cum, corner_indices, CORNER_WINDOW_M)
+        if radius_m <= 0.0 or corner_dist > radius_m:
             return 0.0, 0.0, corner_dist
-        influence = (1.0 - corner_dist / max(CORNER_WINDOW_M, 1e-6)) ** 2
+        influence = (1.0 - corner_dist / max(radius_m, 1e-6)) ** 2
         sharpness = self._corner_sharpness_at_waypoint(corner_idx)
         return float(influence * sharpness), float(sharpness), corner_dist
 
@@ -697,6 +737,16 @@ class LightPaintAviaryPyB(BaseRLAviary):
             return bool(float(t) >= float(self._ref_cumlen[-1]) / max(V_REF, 1e-6))
         return False
 
+    def _is_out_of_bounds(self, pos: np.ndarray) -> bool:
+        pos_arr = np.asarray(pos, dtype=np.float32).reshape(3)
+        return bool(
+            pos_arr[2] < Z_MIN - 0.5
+            or pos_arr[2] > Z_MAX + 0.5
+            or pos_arr[0] < X_MIN - 0.8
+            or pos_arr[0] > X_MAX + 0.8
+            or abs(float(pos_arr[1]) - Y_CANVAS) > Y_BOUND_M
+        )
+
     def _compute_reward_phase_a(
         self,
         pos: np.ndarray,
@@ -717,100 +767,33 @@ class LightPaintAviaryPyB(BaseRLAviary):
         schedule_err = float(np.linalg.norm(pos - p_ref))
         path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
         corner_influence, corner_sharpness, corner_dist = self._corner_context(segment_idx, alpha)
-        r_path = W_PATH * float(np.exp(-((path_dist / PATH_SIGMA_M) ** 2)))
-        r_schedule = W_SCHEDULE * float(np.exp(-((schedule_err / SCHEDULE_SIGMA_M) ** 2)))
-        r_corner_track = W_CORNER_TRACK * corner_influence * float(
-            np.exp(-((schedule_err / CORNER_SIGMA_M) ** 2))
-        )
-        r_corner_path = W_CORNER_PATH * corner_influence * float(
-            np.exp(-((path_dist / CORNER_SIGMA_M) ** 2))
-        )
-        r_led_target = W_NEW_TARGET * float(new_target)
-        r_led_off = -W_OFF_TARGET * float(off_target)
-        r_repaint = -W_REPAINT * float(repaint)
-        r_led_miss = -W_LED_MISS * max(0.0, float(led_ref) - float(brightness))
-        if prev_rpm is not None:
-            du = (rpm - prev_rpm) / 5000.0  # normalize RPM delta
-            r_smooth = float(np.exp(-float(np.linalg.norm(du)))) * LAMBDA_SMOOTH
-        else:
-            r_smooth = LAMBDA_SMOOTH
-        r_action_mag = -W_ACTION_MAG * float(np.dot(self._last_delta_v, self._last_delta_v))
-        if self._prev_delta_v is not None:
-            delta_rate = self._last_delta_v - self._prev_delta_v
-            r_action_rate = -W_ACTION_RATE * float(np.dot(delta_rate, delta_rate))
-        else:
-            r_action_rate = 0.0
-        r_led_flicker = -W_LED_FLICKER * abs(float(brightness) - float(prev_brightness))
         ref_speed = float(np.linalg.norm(self._last_v_ref))
         if ref_speed < 1e-6:
             ref_speed = V_REF
-        v_corner_limit = ref_speed * CORNER_SPEED_FRACTION
-        r_corner_speed = -W_CORNER_SPEED * corner_influence * max(0.0, float(speed) - v_corner_limit) ** 2
-        if ref_speed > 1e-6:
-            v_ref_unit = self._last_v_ref / ref_speed
-            delta_along_ref = float(np.dot(self._last_delta_v, v_ref_unit))
-            delta_lateral = self._last_delta_v - delta_along_ref * v_ref_unit
-        else:
-            delta_along_ref = 0.0
-            delta_lateral = self._last_delta_v
-        r_corner_decel = W_CORNER_DECEL * corner_influence * max(0.0, -delta_along_ref)
-        r_corner_accel = -W_CORNER_ACCEL * corner_influence * max(0.0, delta_along_ref)
-        r_corner_lateral = -W_CORNER_LATERAL * corner_influence * float(np.dot(delta_lateral, delta_lateral))
-        coverage = float(np.clip(coverage, 0.0, 1.0))
-        r_completion = (W_COMPLETION * coverage - W_INCOMPLETE * (1.0 - coverage)) if completion_due else 0.0
-        r_terminal = -100.0 if out_of_bounds else 0.0
-        total = (
-            r_path
-            + r_schedule
-            + r_led_target
-            + r_led_off
-            + r_repaint
-            + r_led_miss
-            + r_smooth
-            + r_action_mag
-            + r_action_rate
-            + r_led_flicker
-            + r_corner_track
-            + r_corner_path
-            + r_corner_speed
-            + r_corner_decel
-            + r_corner_accel
-            + r_corner_lateral
-            + r_completion
-            + r_terminal
+        return compute_lightpaint_reward(
+            path_dist=path_dist,
+            schedule_err=schedule_err,
+            led_ref=led_ref,
+            brightness=brightness,
+            new_target=float(new_target),
+            off_target=float(off_target),
+            repaint=float(repaint),
+            command=np.asarray(rpm, dtype=np.float32),
+            prev_command=None if prev_rpm is None else np.asarray(prev_rpm, dtype=np.float32),
+            command_smooth_scale=5000.0,
+            delta_v=self._last_delta_v,
+            prev_delta_v=self._prev_delta_v,
+            prev_brightness=prev_brightness,
+            corner_influence=corner_influence,
+            corner_sharpness=corner_sharpness,
+            corner_dist=corner_dist,
+            speed=speed,
+            ref_speed=ref_speed,
+            v_ref=self._last_v_ref,
+            coverage=coverage,
+            completion_due=completion_due,
+            out_of_bounds=out_of_bounds,
         )
-        return total, {
-            "r_path": r_path,
-            "r_schedule": r_schedule,
-            "r_track": r_path + r_schedule,
-            "r_led_target": r_led_target,
-            "r_led_off": r_led_off,
-            "r_repaint": r_repaint,
-            "r_led_miss": r_led_miss,
-            "r_led_scripted": r_led_target + r_led_off + r_repaint + r_led_miss,
-            "r_smooth": r_smooth,
-            "r_action_mag": r_action_mag,
-            "r_action_rate": r_action_rate,
-            "r_led_flicker": r_led_flicker,
-            "r_corner_track": r_corner_track,
-            "r_corner_path": r_corner_path,
-            "r_corner_speed": r_corner_speed,
-            "r_corner_decel": r_corner_decel,
-            "r_corner_accel": r_corner_accel,
-            "r_corner_lateral": r_corner_lateral,
-            "r_completion": r_completion,
-            "r_terminal": r_terminal,
-            "path_dist": path_dist,
-            "schedule_err": schedule_err,
-            "paint_coverage": coverage,
-            "corner_sharpness": corner_sharpness,
-            "corner_influence": corner_influence,
-            "corner_dist_m": corner_dist,
-            "corner_delta_v_along_ref": delta_along_ref,
-            "paint_new_target": float(new_target),
-            "paint_off_target": float(off_target),
-            "paint_repaint": float(repaint),
-        }
 
     def _stamp_led_progress(self, pos: np.ndarray, brightness: float = 1.0) -> None:
         if brightness <= 0.0:
@@ -841,8 +824,8 @@ class LightPaintAviaryPyB(BaseRLAviary):
         t_led = float(self._episode_step) * self._ctrl_dt
         led_ref = self._scripted_led_ref(pos, t_led)
         delta_led = self._last_delta_led if self.phase == "B" else 0.0
-        brightness = float(np.clip(led_ref + delta_led, 0.0, 1.0))
-        led_on = brightness > 0.5
+        brightness = led_brightness_from_ref(led_ref, delta_led)
+        led_on = is_led_on(brightness)
         paint_brightness = brightness if led_on else 0.0
         new_target, off_target, repaint = self._paint_stats(pos, paint_brightness)
         if led_on:
@@ -850,13 +833,8 @@ class LightPaintAviaryPyB(BaseRLAviary):
         reference_done = self._reference_done_for_reward(t_led)
         coverage = self._paint_coverage()
         completion_due = bool(reference_done and not self._completion_reward_given)
-        # Out-of-bounds check (xz arena + small y latitude)
-        out_of_bounds = bool(
-            pos[2] < Z_MIN - 0.5
-            or pos[2] > Z_MAX + 0.5
-            or pos[0] < X_MIN - 0.8
-            or pos[0] > X_MAX + 0.8
-        )
+        # Out-of-bounds check (xz arena + small y latitude around the canvas plane)
+        out_of_bounds = self._is_out_of_bounds(pos)
         reward, components = self._compute_reward_phase_a(
             pos=pos,
             p_ref=self._last_p_ref,
@@ -935,6 +913,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
             self.dsl_pid.reset()
         except Exception:
             pass
+        self.INIT_XYZS = self._sample_initial_xyz()
 
         # Reset paint + episode state BEFORE super so any _computeObs is well-defined
         self.cumulative = np.zeros((64, 64), dtype=np.float32)
