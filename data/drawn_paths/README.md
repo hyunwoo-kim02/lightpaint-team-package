@@ -21,11 +21,11 @@ JSON contract:
 Run a user path:
 
 ```powershell
-..\mini_script\teams\infra\.venv\Scripts\python.exe -m src.train.train_phase_a_pid --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --wind-mode M0 --seed 42
+python -m src.train.train_phase_a_pid --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --wind-mode M0 --seed 42
 ```
 
 Scale the same JSON without editing the file:
 
 ```powershell
-..\mini_script\teams\infra\.venv\Scripts\python.exe -m src.train.train_phase_b --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --path-scale 0.8 --wind-mode M1 --total-timesteps 128
+python -m src.train.train_phase_b --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --path-scale 0.8 --wind-mode M1 --total-timesteps 128
 ```

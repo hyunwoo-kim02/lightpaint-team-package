@@ -6,10 +6,10 @@ param(
 )
 
 Set-Location (Join-Path $PSScriptRoot "..")
-$infraPython = Join-Path (Get-Location) "..\mini_script\teams\infra\.venv\Scripts\python.exe"
+$venvPython = Join-Path (Get-Location) ".venv\Scripts\python.exe"
 $dashboardArgs = @("-m", "src.train.experiment_dashboard", "--host", $HostName, "--port", $Port, "--open") + $ExtraArgs
-if (Test-Path $infraPython) {
-    & $infraPython @dashboardArgs
+if (Test-Path $venvPython) {
+    & $venvPython @dashboardArgs
 } else {
     python @dashboardArgs
 }
