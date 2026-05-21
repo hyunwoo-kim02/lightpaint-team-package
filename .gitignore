@@ -13,7 +13,7 @@ artifacts/pytest-cache/
 artifacts/pytest-tmp/
 
 # Generated experiment and visualization artifacts
-artifacts/
+artifacts/*
 !artifacts/README.md
 
 # Trained model binaries; use Git LFS or DVC if these must be versioned.
