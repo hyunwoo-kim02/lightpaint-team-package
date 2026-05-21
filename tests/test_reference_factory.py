@@ -99,6 +99,24 @@ def test_reference_factory_uses_drawn_json_scale_when_cli_scale_omitted(tmp_path
     assert np.isclose(built.reference.length, 0.45, atol=1e-6)
 
 
+def test_reference_factory_resolves_relative_drawn_path_from_package_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    built = build_reference_from_args(
+        _args(
+            trajectory="drawn",
+            drawn_path="data/drawn_paths/examples/example_two_strokes.json",
+            path_scale=0.5,
+            no_smooth_ref=True,
+        )
+    )
+
+    assert built.label == "example_two_strokes"
+    assert built.metadata["drawn_path"].replace("\\", "/") == "data/drawn_paths/examples/example_two_strokes.json"
+    assert Path(built.metadata["resolved_drawn_path"]).is_absolute()
+    assert built.reference.length > 0.0
+
+
 def test_reference_factory_scales_letter():
     built = build_reference_from_args(
         _args(trajectory="letter", label="L", width_m=0.6, height_m=0.8, path_scale=0.5, max_waypoints=40)

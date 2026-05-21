@@ -21,6 +21,9 @@ from src.env.lightpaint_ref import (
 )
 
 
+_PKG_ROOT = Path(__file__).resolve().parents[2]
+
+
 @dataclass(frozen=True)
 class ReferenceBuild:
     """Compiled reference plus the metadata needed for artifacts."""
@@ -45,6 +48,13 @@ def _safe_token(value: str) -> str:
     for ch in str(value):
         keep.append(ch if ch.isalnum() or ch in ("-", "_") else "_")
     return "".join(keep) or "run"
+
+
+def _resolve_package_relative_path(raw: str | Path) -> Path:
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return _PKG_ROOT / path
 
 
 def _smooth_arg(args: argparse.Namespace) -> bool | None:
@@ -159,7 +169,8 @@ def build_reference_from_args(args: argparse.Namespace) -> ReferenceBuild:
     if trajectory == "drawn":
         if getattr(args, "drawn_path", None) is None:
             raise ValueError("--trajectory drawn은 --drawn-path가 필요합니다")
-        json_path = Path(args.drawn_path)
+        raw_json_path = Path(args.drawn_path)
+        json_path = _resolve_package_relative_path(raw_json_path)
         raw_path_scale = getattr(args, "path_scale", None)
         ref = load_drawn_path_ref(
             path=json_path,
@@ -183,11 +194,12 @@ def build_reference_from_args(args: argparse.Namespace) -> ReferenceBuild:
             effective_scale = _positive_scale(data.get("path_scale", data.get("distance_scale", data.get("scale", 1.0))))
         else:
             effective_scale = scale
-        label = json_path.stem
+        label = raw_json_path.stem
         metadata = {
             "trajectory": "drawn",
             "label": label,
-            "drawn_path": str(json_path),
+            "drawn_path": str(raw_json_path),
+            "resolved_drawn_path": str(json_path),
             "path_scale": effective_scale,
             "plane": ref.plane,
         }
