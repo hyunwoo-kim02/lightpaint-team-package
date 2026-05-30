@@ -59,7 +59,7 @@ def _base_temp_dir() -> str:
     return fallback
 
 
-def _acquire_lock(lock_path: str, timeout_s: float = 30.0):
+def _acquire_lock(lock_path: str, timeout_s: float = 180.0):
     start = time.time()
     while True:
         try:
@@ -68,7 +68,11 @@ def _acquire_lock(lock_path: str, timeout_s: float = 30.0):
             if time.time() - start > timeout_s:
                 try:
                     if time.time() - os.path.getmtime(lock_path) > timeout_s:
-                        os.unlink(lock_path)
+                        try:
+                            os.unlink(lock_path)
+                        except PermissionError:
+                            time.sleep(0.1)
+                            continue
                         continue
                 except FileNotFoundError:
                     continue

@@ -169,7 +169,13 @@ python -m src.train.train_phase_b --trajectory letter --label L --wind-mode M2 -
 PPO 실험:
 
 ```powershell
-python -m src.train.train_phase_b --trajectory square --square-side 0.8 --wind-mode M0 --seed 7 --total-timesteps 1024
+python -m src.train.train_phase_b --trajectory square --square-side 0.8 --wind-mode M0 --seed 7 --total-timesteps 100000
+```
+
+여러 글자 장시간 sweep:
+
+```powershell
+python -m src.train.run_final_goal_batch --profile letters --output-dir artifacts\letter_batch_standard
 ```
 
 BC warm-start 실험:
@@ -203,7 +209,7 @@ python -m src.train.train_phase_b --trajectory square --square-side 0.8 --wind-m
 
 | 인자 | 의미 | 시작값 | 조정 방향 | 주의점 |
 |---|---|---:|---|---|
-| `--total-timesteps` | PPO 학습 step 수 | smoke `128`, 실험 `1024+` | 안정하면 증가 | 짧은 smoke는 성능 판단용이 아니다. |
+| `--total-timesteps` | PPO 학습 step 수 | smoke `0~8192`, 단일 full `100000+` | 최종 후보는 `200000~300000+` | 짧은 smoke는 성능 판단용이 아니다. 여러 글자는 `run_final_goal_batch --profile letters`를 사용한다. |
 | `--n-steps` | PPO rollout buffer 길이 | `64` | `64~256` | 너무 작으면 advantage 추정이 불안정할 수 있다. |
 | `--batch-size` | PPO minibatch 크기 | `32` | `32~128` | `n_steps`와 나누어 떨어지는 값이 좋다. |
 | `--n-epochs` | PPO update 반복 수 | `2` | `2~5` | 너무 크면 기존 행동이 급격히 망가질 수 있다. |
@@ -213,7 +219,7 @@ python -m src.train.train_phase_b --trajectory square --square-side 0.8 --wind-m
 | `--ent-coef` | exploration 보상 | `0.0` | 필요 시 소폭 증가 | 현재는 과한 탐색보다 안정성이 우선이다. |
 | `--clip-range` | PPO policy update 제한 | `0.2` | 불안정하면 `0.1` | policy가 급변하면 낮춘다. |
 | `--log-std-init` | 초기 action 분산 | `-2.0`, 안정 실험 `-3.0` | action이 크면 더 낮춤 | 보정 action이 과하면 경로가 망가진다. |
-| `--device` | 학습 장치 | `cpu` | GPU 가능 시 변경 | 현재 smoke와 짧은 실험은 CPU로 충분하다. |
+| `--device` | 학습 장치 | `cpu` | GPU 가능 시 변경 | 장시간 multi-letter 학습은 GPU/빠른 CPU 환경에서 실행한다. |
 | `--load-model` | 저장된 PPO weight 경로 | 없음 | 기존 `.zip`을 지정 | 다른 mode나 경로에서 재활용할 때 사용한다. |
 | `--eval-only` | 학습 없이 평가만 수행 | 꺼짐 | weight 평가 시 사용 | `--load-model`과 함께 사용한다. |
 | `--reset-num-timesteps` | 이어 학습 시 timestep 카운터 초기화 | 꺼짐 | 새 run처럼 기록할 때 켬 | weight 자체를 초기화하는 옵션은 아니다. |
@@ -229,7 +235,7 @@ python -m src.train.train_phase_b --trajectory square --square-side 0.8 --wind-m
 | `--bc-nonzero-weight` | 보정 action이 0이 아닌 sample 가중치 | `100` | teacher 행동이 약하면 증가 | 너무 크면 특정 구간 행동만 과하게 배운다. |
 | `--teacher-gain` | teacher 감속 강도 | `0.10` | 감속 부족하면 증가 | 너무 크면 코너 전 속도가 과도하게 줄어든다. |
 | `--teacher-window-m` | 코너 전 teacher 적용 거리 | `0.15` | 코너 대응이 늦으면 증가 | 경로가 짧으면 너무 크게 잡지 않는다. |
-| `--trained-action-filter` | 학습 action 제한 방식 | `none`, 안정 실험 `corner_tangent_decel` | 코너 감속 실험에서는 filter 사용 | filter는 행동 공간을 제한하므로 목적과 맞을 때만 사용한다. |
+| `--trained-action-filter` | 평가 rollout의 trained action 후처리 | 최종/batch `corner_tangent_decel`, raw ablation `none` | raw policy 자체를 보고 싶을 때만 `none` | filter는 학습된 residual action 중 코너 tangent 감속 성분만 남기는 배포/평가 정책이다. 결과에 반드시 기록한다. |
 
 ### 8.4 인자 선택 순서
 

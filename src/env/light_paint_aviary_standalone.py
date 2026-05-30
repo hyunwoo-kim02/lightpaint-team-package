@@ -212,6 +212,7 @@ class LightPaintAviaryW1(gym.Env):
         # Build reference trajectory using connected-component ordering
         self._ref_waypoints, self._ref_cumlen = self._build_ref_trajectory()
         self._corner_indices = self._resolve_corner_indices()
+        self._corner_sharpness_lookup = self._resolve_corner_sharpness_lookup()
 
         # --- Composition: PID controller, wind generator, LED strategy ---
         from src.env.pid_controller import VelocityPID
@@ -259,6 +260,16 @@ class LightPaintAviaryW1(gym.Env):
             corner_indices=np.asarray(indices, dtype=np.int32),
             window_m=CORNER_WINDOW_M,
         )
+
+    def _resolve_corner_sharpness_lookup(self) -> dict[int, float]:
+        lookup: dict[int, float] = {}
+        for idx in np.asarray(getattr(self, "_corner_indices", []), dtype=np.int32).reshape(-1):
+            lookup[int(idx)] = self._corner_sharpness_at_waypoint(int(idx))
+        return lookup
+
+    def _corner_sharpness_for_index(self, corner_idx: int) -> float:
+        fallback = self._corner_sharpness_at_waypoint(corner_idx)
+        return float(np.clip(self._corner_sharpness_lookup.get(int(corner_idx), fallback), 0.0, 1.0))
 
     def _load_letter_mask(self) -> None:
         """
@@ -551,16 +562,15 @@ class LightPaintAviaryW1(gym.Env):
         cosang = float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0))
         return float(np.clip((1.0 - cosang) * 0.5, 0.0, 1.0))
 
-    def _corner_context(self, segment_idx: int, alpha: float) -> Tuple[float, float, float]:
+    def _corner_context_for_distance(self, s_now: float) -> Tuple[float, float, float]:
         pts = np.asarray(self._ref_waypoints, dtype=np.float32)
         cum = np.asarray(self._ref_cumlen, dtype=np.float32)
-        if len(pts) < 3 or len(cum) != len(pts) or segment_idx >= len(pts) - 1:
+        if len(pts) < 3 or len(cum) != len(pts):
             return 0.0, 0.0, float("inf")
-        seg_len = float(np.linalg.norm(pts[segment_idx + 1] - pts[segment_idx]))
-        s_now = float(cum[segment_idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
         corner_indices = np.asarray(getattr(self, "_corner_indices", []), dtype=np.int32)
         if corner_indices.size == 0:
             return 0.0, 0.0, float("inf")
+        s_now = float(np.clip(float(s_now), 0.0, float(cum[-1])))
         corner_s = cum[corner_indices]
         nearest_rel = int(np.argmin(np.abs(corner_s - s_now)))
         corner_idx = int(corner_indices[nearest_rel])
@@ -569,8 +579,20 @@ class LightPaintAviaryW1(gym.Env):
         if radius_m <= 0.0 or corner_dist > radius_m:
             return 0.0, 0.0, corner_dist
         influence = (1.0 - corner_dist / max(radius_m, 1e-6)) ** 2
-        sharpness = self._corner_sharpness_at_waypoint(corner_idx)
+        sharpness = self._corner_sharpness_for_index(corner_idx)
         return float(influence * sharpness), float(sharpness), corner_dist
+
+    def _corner_context(self, segment_idx: int, alpha: float) -> Tuple[float, float, float]:
+        pts = np.asarray(self._ref_waypoints, dtype=np.float32)
+        cum = np.asarray(self._ref_cumlen, dtype=np.float32)
+        if len(pts) < 3 or len(cum) != len(pts) or segment_idx >= len(pts) - 1:
+            return 0.0, 0.0, float("inf")
+        seg_len = float(np.linalg.norm(pts[segment_idx + 1] - pts[segment_idx]))
+        s_now = float(cum[segment_idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
+        return self._corner_context_for_distance(s_now)
+
+    def _scheduled_corner_context(self, t: float) -> Tuple[float, float, float]:
+        return self._corner_context_for_distance(float(t) * V_REF)
 
     def _paint_stats(self, pos: np.ndarray, brightness: float) -> Tuple[float, float, float]:
         if brightness <= 0.0:
@@ -639,8 +661,9 @@ class LightPaintAviaryW1(gym.Env):
     ) -> Tuple[float, Dict[str, float]]:
         """Path/paint/smoothness reward shared by Phase A and B."""
         schedule_err = float(np.linalg.norm(pos - p_ref))
-        path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
-        corner_influence, corner_sharpness, corner_dist = self._corner_context(segment_idx, alpha)
+        path_dist, _, _ = self._nearest_path_stats(pos)
+        t_ref = float(self._episode_step) * DT
+        corner_influence, corner_sharpness, corner_dist = self._scheduled_corner_context(t_ref)
         speed = float(np.linalg.norm(self._vel))
         ref_speed = V_REF
         v_ref = self._interpolate_traj_velocity(float(self._episode_step) * DT * V_REF)
@@ -929,6 +952,7 @@ class LightPaintAviaryW1(gym.Env):
             "led_on": bool(led_on),
             "painted_px": int(self.cumulative.sum()),
             "tracking_err": tracking_err,
+            "out_of_bounds": bool(out_of_bounds),
             "r": reward,  # for ep_info_buffer via Monitor
             **reward_components,
         }

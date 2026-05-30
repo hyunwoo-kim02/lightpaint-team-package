@@ -1,0 +1,900 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Corner Hint Editor</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111210;
+      --panel: #181916;
+      --panel-2: #20211d;
+      --ink: #f1efe7;
+      --muted: #aaa693;
+      --line: #403f36;
+      --path: #74d3c1;
+      --led-off: #6c706c;
+      --corner: #ffbd4a;
+      --auto: #d8d1bc;
+      --bad: #ff6b5f;
+      --ok: #94d36f;
+      font-family: "Segoe UI", "Aptos", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) 390px;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        var(--bg);
+      background-size: 28px 28px;
+    }
+    main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      padding: 18px;
+      gap: 12px;
+    }
+    header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 14px;
+      min-height: 54px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1;
+      letter-spacing: 0;
+      font-weight: 750;
+    }
+    .sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .stage {
+      position: relative;
+      min-height: 420px;
+      border: 1px solid var(--line);
+      background: #080907;
+      overflow: hidden;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      min-height: 420px;
+      display: block;
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .hud {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      pointer-events: none;
+    }
+    .pill {
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(17,18,16,.72);
+      color: var(--ink);
+      padding: 5px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      backdrop-filter: blur(8px);
+    }
+    aside {
+      min-width: 0;
+      border-left: 1px solid var(--line);
+      background: linear-gradient(180deg, var(--panel), #12130f);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    section {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.025);
+      padding: 12px;
+    }
+    section h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--auto);
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input, select, textarea, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--ink);
+      border-radius: 4px;
+      padding: 8px 9px;
+      font: inherit;
+      font-size: 13px;
+    }
+    input[type="file"] {
+      padding: 7px;
+    }
+    textarea {
+      min-height: 170px;
+      resize: vertical;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.42;
+      white-space: pre;
+    }
+    button {
+      cursor: pointer;
+      background: #262820;
+      transition: background .12s ease, transform .12s ease, border-color .12s ease;
+    }
+    button:hover {
+      background: #303327;
+      border-color: #67614c;
+    }
+    button:active {
+      transform: translateY(1px);
+    }
+    button.primary {
+      background: #614610;
+      border-color: #aa7b22;
+    }
+    button.danger {
+      background: #3a1816;
+      border-color: #73342f;
+    }
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .grid3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    .stack {
+      display: grid;
+      gap: 9px;
+    }
+    .list {
+      display: grid;
+      gap: 6px;
+      max-height: 170px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .corner-row {
+      display: grid;
+      grid-template-columns: 28px 1fr 54px;
+      gap: 7px;
+      align-items: center;
+      color: var(--ink);
+      font-size: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.025);
+      padding: 5px;
+    }
+    .corner-row.selected {
+      border-color: var(--corner);
+      background: rgba(255,189,74,.08);
+    }
+    .idx {
+      color: var(--corner);
+      font-weight: 700;
+      text-align: center;
+    }
+    .mini {
+      padding: 5px 7px;
+      font-size: 11px;
+    }
+    .status {
+      min-height: 17px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+    @media (max-width: 980px) {
+      body {
+        grid-template-columns: 1fr;
+      }
+      aside {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Corner Hint Editor</h1>
+        <div class="sub">DG/reference path annotation</div>
+      </div>
+      <div class="pill" id="statePill">No reference</div>
+    </header>
+    <div class="stage">
+      <canvas id="canvas" width="1200" height="800"></canvas>
+      <div class="hud">
+        <div class="pill" id="lengthPill">length 0.000 m</div>
+        <div class="pill" id="cornerPill">manual 0</div>
+        <div class="pill" id="autoPill">auto 0</div>
+      </div>
+    </div>
+  </main>
+  <aside>
+    <section class="stack">
+      <h2>Reference</h2>
+      <button id="loadDefaultDg" class="primary">Load DG Reference</button>
+      <button id="loadImageWaypointDg">Load image_to_waypoints DG</button>
+      <label>reference JSON or trajectory CSV
+        <input id="refFile" type="file" accept=".json,.csv">
+      </label>
+      <label>corner hint JSON
+        <input id="hintFile" type="file" accept=".json">
+      </label>
+      <div class="grid2">
+        <label>plane
+          <select id="plane">
+            <option value="xz" selected>XZ</option>
+            <option value="xy">XY</option>
+          </select>
+        </label>
+        <label>speed
+          <input id="speed" type="number" min="0.01" step="0.01" value="0.35">
+        </label>
+      </div>
+      <label>name
+        <input id="name" value="DG_manual_corners">
+      </label>
+      <div class="status" id="status">Load a reference file.</div>
+    </section>
+
+    <section class="stack">
+      <h2>Manual Corners</h2>
+      <div class="list" id="cornerList"></div>
+      <div class="grid3">
+        <button id="useAuto">Use Auto</button>
+        <button id="sortCorners">Sort</button>
+        <button id="deleteCorner" class="danger">Delete</button>
+      </div>
+      <button id="clearCorners" class="danger">Clear</button>
+    </section>
+
+    <section class="stack">
+      <h2>Export</h2>
+      <textarea id="output" spellcheck="false"></textarea>
+      <div class="grid2">
+        <button id="copyJson">Copy JSON</button>
+        <button id="downloadJson" class="primary">Download</button>
+      </div>
+    </section>
+  </aside>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const refFile = document.getElementById("refFile");
+    const hintFile = document.getElementById("hintFile");
+    const planeInput = document.getElementById("plane");
+    const speedInput = document.getElementById("speed");
+    const nameInput = document.getElementById("name");
+    const output = document.getElementById("output");
+    const statusEl = document.getElementById("status");
+    const loadDefaultDg = document.getElementById("loadDefaultDg");
+    const loadImageWaypointDg = document.getElementById("loadImageWaypointDg");
+    const statePill = document.getElementById("statePill");
+    const lengthPill = document.getElementById("lengthPill");
+    const cornerPill = document.getElementById("cornerPill");
+    const autoPill = document.getElementById("autoPill");
+    const cornerList = document.getElementById("cornerList");
+
+    let reference = null;
+    let manualCorners = [];
+    let autoCorners = [];
+    let selected = -1;
+    let dragging = false;
+    let view = { minX: -1, maxX: 1, minY: -1, maxY: 1, pad: 54 };
+
+    function setStatus(text, tone = "") {
+      statusEl.textContent = text;
+      statusEl.className = "status " + tone;
+    }
+
+    function parseCsv(text) {
+      const rows = text.trim().split(/\r?\n/).filter(Boolean);
+      if (rows.length < 2) throw new Error("CSV has no rows");
+      const header = rows[0].split(",").map(v => v.trim());
+      const idx = Object.fromEntries(header.map((h, i) => [h, i]));
+      const xKey = idx.ref_x !== undefined ? "ref_x" : "x";
+      const yKey = idx.ref_y !== undefined ? "ref_y" : "y";
+      const zKey = idx.ref_z !== undefined ? "ref_z" : "z";
+      if (idx[xKey] === undefined || idx[yKey] === undefined || idx[zKey] === undefined) {
+        throw new Error("CSV needs ref_x/ref_y/ref_z or x/y/z columns");
+      }
+      const waypoints = [];
+      const tValues = [];
+      for (const line of rows.slice(1)) {
+        const cols = line.split(",");
+        const p = [Number(cols[idx[xKey]]), Number(cols[idx[yKey]]), Number(cols[idx[zKey]])];
+        if (!p.every(Number.isFinite)) continue;
+        const last = waypoints[waypoints.length - 1];
+        if (!last || distance3(last, p) > 1e-5) waypoints.push(p);
+        if (idx.t_s !== undefined) {
+          const t = Number(cols[idx.t_s]);
+          if (Number.isFinite(t)) tValues.push(t);
+        }
+      }
+      const inferredSpeed = inferSpeed(waypoints, tValues);
+      return { name: "trajectory_csv", plane: planeInput.value, speed: inferredSpeed, waypoints };
+    }
+
+    function parseJson(text) {
+      const data = JSON.parse(text);
+      if (!Array.isArray(data.waypoints)) {
+        throw new Error("JSON needs a waypoints array");
+      }
+      return {
+        name: data.name || data.metadata?.label || "reference_json",
+        plane: data.plane || data.metadata?.plane || planeInput.value,
+        speed: Number(data.speed || data.metadata?.speed || speedInput.value || 0.35),
+        waypoints: data.waypoints.map(p => p.map(Number)),
+        segmentLed: Array.isArray(data.segment_led) ? data.segment_led.map(Number) : null,
+        autoCorners: Array.isArray(data.auto_corners) ? data.auto_corners : null,
+        hintDistances: data.corner_distance_hints_m || data.corner_distances_m || data.corner_s_m || null,
+      };
+    }
+
+    function inferSpeed(points, times) {
+      const length = computeCumlen(points).at(-1) || 0;
+      const maxT = Math.max(...times.filter(Number.isFinite), 0);
+      if (length > 0 && maxT > 0) return Math.max(0.01, length / maxT);
+      return Number(speedInput.value) || 0.35;
+    }
+
+    function loadReference(parsed) {
+      const waypoints = dedupe(parsed.waypoints || []);
+      if (waypoints.length < 2) throw new Error("reference needs at least two points");
+      const plane = parsed.plane === "xy" ? "xy" : "xz";
+      const speed = Number(parsed.speed) || 0.35;
+      const cumlen = computeCumlen(waypoints);
+      reference = {
+        name: parsed.name || "reference",
+        plane,
+        speed,
+        waypoints,
+        segmentLed: normalizeSegmentLed(parsed.segmentLed, waypoints.length - 1),
+        cumlen,
+        length: cumlen[cumlen.length - 1],
+      };
+      planeInput.value = plane;
+      speedInput.value = speed.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+      autoCorners = parsed.autoCorners ? parsed.autoCorners.map(cornerFromRecord) : detectAutoCorners(reference);
+      manualCorners = parsed.hintDistances ? parsed.hintDistances.map(sToCorner) : [];
+      selected = manualCorners.length ? 0 : -1;
+      fitView();
+      updateAll();
+      setStatus("Reference loaded.", "ok");
+    }
+
+    async function loadReferenceFromUrl(url, label) {
+      try {
+        setStatus(`Loading ${label}...`);
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${label} fetch failed: ${response.status}`);
+        loadReference(parseJson(await response.text()));
+      } catch (error) {
+        setStatus(error.message, "bad");
+      }
+    }
+
+    function loadDefaultDgReference() {
+      return loadReferenceFromUrl("../data/corner_hints/DG_reference.json", "DG reference");
+    }
+
+    function loadImageWaypointDgReference() {
+      return loadReferenceFromUrl(
+        "../data/corner_hints/DG_image_to_waypoints_xz_reference.json",
+        "image_to_waypoints DG"
+      );
+    }
+
+    function normalizeSegmentLed(values, count) {
+      if (!Array.isArray(values) || values.length !== count) return new Array(count).fill(1);
+      return values.map(v => Number(v) > 0.5 ? 1 : 0);
+    }
+
+    function dedupe(points) {
+      const out = [];
+      for (const p of points) {
+        if (!Array.isArray(p) || p.length < 3) continue;
+        const q = [Number(p[0]), Number(p[1]), Number(p[2])];
+        if (!q.every(Number.isFinite)) continue;
+        if (!out.length || distance3(out[out.length - 1], q) > 1e-6) out.push(q);
+      }
+      return out;
+    }
+
+    function computeCumlen(points) {
+      const out = [0];
+      for (let i = 1; i < points.length; i++) {
+        out.push(out[i - 1] + distance3(points[i - 1], points[i]));
+      }
+      return out;
+    }
+
+    function distance3(a, b) {
+      return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    }
+
+    function axisPoint(p) {
+      return reference && reference.plane === "xy" ? [p[0], p[1]] : [p[0], p[2]];
+    }
+
+    function fitView() {
+      const pts = reference.waypoints.map(axisPoint);
+      const xs = pts.map(p => p[0]);
+      const ys = pts.map(p => p[1]);
+      const spanX = Math.max(Math.max(...xs) - Math.min(...xs), 1e-3);
+      const spanY = Math.max(Math.max(...ys) - Math.min(...ys), 1e-3);
+      const marginX = spanX * 0.12;
+      const marginY = spanY * 0.12;
+      view = {
+        minX: Math.min(...xs) - marginX,
+        maxX: Math.max(...xs) + marginX,
+        minY: Math.min(...ys) - marginY,
+        maxY: Math.max(...ys) + marginY,
+        pad: 54,
+      };
+    }
+
+    function worldToCanvas(p3) {
+      const [x, y] = axisPoint(p3);
+      const w = canvas.width - view.pad * 2;
+      const h = canvas.height - view.pad * 2;
+      const sx = view.pad + (x - view.minX) / (view.maxX - view.minX) * w;
+      const sy = canvas.height - view.pad - (y - view.minY) / (view.maxY - view.minY) * h;
+      return [sx, sy];
+    }
+
+    function canvasToWorld2(x, y) {
+      const w = canvas.width - view.pad * 2;
+      const h = canvas.height - view.pad * 2;
+      return [
+        view.minX + (x - view.pad) / w * (view.maxX - view.minX),
+        view.minY + (canvas.height - view.pad - y) / h * (view.maxY - view.minY),
+      ];
+    }
+
+    function pointerPoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return [
+        (event.clientX - rect.left) / rect.width * canvas.width,
+        (event.clientY - rect.top) / rect.height * canvas.height,
+      ];
+    }
+
+    function nearestOnPath(x, y) {
+      if (!reference) return null;
+      const target2 = canvasToWorld2(x, y);
+      let best = null;
+      for (let i = 0; i < reference.waypoints.length - 1; i++) {
+        const a3 = reference.waypoints[i];
+        const b3 = reference.waypoints[i + 1];
+        const a = axisPoint(a3);
+        const b = axisPoint(b3);
+        const vx = b[0] - a[0];
+        const vy = b[1] - a[1];
+        const denom = Math.max(vx * vx + vy * vy, 1e-12);
+        const t = Math.min(1, Math.max(0, ((target2[0] - a[0]) * vx + (target2[1] - a[1]) * vy) / denom));
+        const sx = a[0] + vx * t;
+        const sy = a[1] + vy * t;
+        const d = Math.hypot(target2[0] - sx, target2[1] - sy);
+        if (!best || d < best.d) {
+          const p3 = [
+            a3[0] + (b3[0] - a3[0]) * t,
+            a3[1] + (b3[1] - a3[1]) * t,
+            a3[2] + (b3[2] - a3[2]) * t,
+          ];
+          best = {
+            d,
+            s_m: reference.cumlen[i] + distance3(a3, b3) * t,
+            point: p3,
+            segment: i,
+          };
+        }
+      }
+      return best;
+    }
+
+    function sToCorner(s) {
+      const clamped = Math.max(0, Math.min(reference.length, Number(s)));
+      let i = 0;
+      while (i < reference.cumlen.length - 2 && reference.cumlen[i + 1] < clamped) i++;
+      const a = reference.waypoints[i];
+      const b = reference.waypoints[i + 1];
+      const segLen = Math.max(distance3(a, b), 1e-12);
+      const t = (clamped - reference.cumlen[i]) / segLen;
+      return {
+        s_m: clamped,
+        t_s: clamped / reference.speed,
+        point: [
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+          a[2] + (b[2] - a[2]) * t,
+        ],
+      };
+    }
+
+    function cornerFromRecord(record) {
+      if (typeof record === "number") return sToCorner(record);
+      if (record.s_m !== undefined) return sToCorner(Number(record.s_m));
+      if (record.distance_m !== undefined) return sToCorner(Number(record.distance_m));
+      if (record.t_s !== undefined) return sToCorner(Number(record.t_s) * reference.speed);
+      return sToCorner(0);
+    }
+
+    function detectAutoCorners(ref) {
+      const candidates = [];
+      for (let i = 1; i < ref.waypoints.length - 1; i++) {
+        const a = ref.waypoints[i - 1];
+        const b = ref.waypoints[i];
+        const c = ref.waypoints[i + 1];
+        const v1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        const v2 = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+        const n1 = Math.max(Math.hypot(...v1), 1e-9);
+        const n2 = Math.max(Math.hypot(...v2), 1e-9);
+        const dot = (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (n1 * n2);
+        const sharpness = 1 - Math.max(-1, Math.min(1, dot));
+        if (sharpness > 0.12) candidates.push({ i, sharpness, s: ref.cumlen[i] });
+      }
+      candidates.sort((a, b) => b.sharpness - a.sharpness);
+      const kept = [];
+      for (const c of candidates) {
+        if (kept.every(k => Math.abs(k.s - c.s) >= 0.36)) kept.push(c);
+        if (kept.length >= 8) break;
+      }
+      kept.sort((a, b) => a.s - b.s);
+      return kept.map(c => ({ ...sToCorner(c.s), sharpness: c.sharpness }));
+    }
+
+    function findMarker(x, y) {
+      let best = -1;
+      let bestD = 13;
+      manualCorners.forEach((corner, i) => {
+        const [cx, cy] = worldToCanvas(corner.point);
+        const d = Math.hypot(x - cx, y - cy);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      });
+      return best;
+    }
+
+    function updateCornerFromPointer(i, x, y) {
+      const snap = nearestOnPath(x, y);
+      if (!snap) return;
+      manualCorners[i] = {
+        s_m: snap.s_m,
+        t_s: snap.s_m / reference.speed,
+        point: snap.point,
+      };
+      updateAll(false);
+    }
+
+    function addCornerFromPointer(x, y) {
+      const snap = nearestOnPath(x, y);
+      if (!snap) return;
+      manualCorners.push({
+        s_m: snap.s_m,
+        t_s: snap.s_m / reference.speed,
+        point: snap.point,
+      });
+      selected = manualCorners.length - 1;
+      sortManual(false);
+      updateAll();
+    }
+
+    function sortManual(keepSelection = true) {
+      const selectedCorner = keepSelection ? manualCorners[selected] : null;
+      manualCorners.sort((a, b) => a.s_m - b.s_m);
+      if (selectedCorner) selected = manualCorners.indexOf(selectedCorner);
+      if (selected < 0 && manualCorners.length) selected = 0;
+    }
+
+    function exportJson() {
+      const sorted = [...manualCorners].sort((a, b) => a.s_m - b.s_m);
+      return {
+        schema_version: 1,
+        source: "tools/corner_hint_editor.html",
+        name: nameInput.value || "manual_corners",
+        reference_name: reference?.name || null,
+        trajectory: "letter",
+        label: "DG",
+        plane: reference?.plane || planeInput.value,
+        speed: Number(speedInput.value) || reference?.speed || 0.35,
+        corner_distance_hints_m: sorted.map(c => Number(c.s_m.toFixed(6))),
+        corners: sorted.map((c, i) => ({
+          id: i + 1,
+          s_m: Number(c.s_m.toFixed(6)),
+          t_s: Number(c.t_s.toFixed(6)),
+          point: c.point.map(v => Number(v.toFixed(6))),
+        })),
+      };
+    }
+
+    function updateAll(redraw = true) {
+      if (reference) {
+        reference.speed = Number(speedInput.value) || reference.speed;
+        manualCorners = manualCorners.map(c => ({ ...c, t_s: c.s_m / reference.speed }));
+      }
+      cornerPill.textContent = `manual ${manualCorners.length}`;
+      autoPill.textContent = `auto ${autoCorners.length}`;
+      lengthPill.textContent = `length ${reference ? reference.length.toFixed(3) : "0.000"} m`;
+      statePill.textContent = reference ? reference.name : "No reference";
+      output.value = JSON.stringify(exportJson(), null, 2);
+      renderList();
+      if (redraw) draw();
+    }
+
+    function renderList() {
+      cornerList.innerHTML = "";
+      if (!manualCorners.length) {
+        const empty = document.createElement("div");
+        empty.className = "status";
+        empty.textContent = "No manual corners.";
+        cornerList.appendChild(empty);
+        return;
+      }
+      manualCorners.forEach((corner, i) => {
+        const row = document.createElement("div");
+        row.className = "corner-row" + (i === selected ? " selected" : "");
+        row.addEventListener("click", () => { selected = i; updateAll(); });
+        const idx = document.createElement("div");
+        idx.className = "idx";
+        idx.textContent = String(i + 1);
+        const text = document.createElement("div");
+        text.textContent = `${corner.s_m.toFixed(4)} m / ${corner.t_s.toFixed(3)} s`;
+        const button = document.createElement("button");
+        button.className = "mini danger";
+        button.textContent = "Del";
+        button.addEventListener("click", event => {
+          event.stopPropagation();
+          manualCorners.splice(i, 1);
+          selected = Math.min(selected, manualCorners.length - 1);
+          updateAll();
+        });
+        row.append(idx, text, button);
+        cornerList.appendChild(row);
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#080907";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      drawGrid();
+      if (!reference) {
+        ctx.fillStyle = "#aaa693";
+        ctx.font = "18px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.fillText("Load reference JSON or trajectory CSV", canvas.width / 2, canvas.height / 2);
+        return;
+      }
+      drawPath();
+      drawAutoCorners();
+      drawManualCorners();
+    }
+
+    function drawGrid() {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,255,255,.045)";
+      ctx.lineWidth = 1;
+      for (let x = view.pad; x <= canvas.width - view.pad; x += 48) {
+        ctx.beginPath();
+        ctx.moveTo(x, view.pad);
+        ctx.lineTo(x, canvas.height - view.pad);
+        ctx.stroke();
+      }
+      for (let y = view.pad; y <= canvas.height - view.pad; y += 48) {
+        ctx.beginPath();
+        ctx.moveTo(view.pad, y);
+        ctx.lineTo(canvas.width - view.pad, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawPath() {
+      for (let i = 0; i < reference.waypoints.length - 1; i++) {
+        const [x1, y1] = worldToCanvas(reference.waypoints[i]);
+        const [x2, y2] = worldToCanvas(reference.waypoints[i + 1]);
+        ctx.save();
+        ctx.strokeStyle = reference.segmentLed[i] > 0.5 ? "#74d3c1" : "#6c706c";
+        ctx.lineWidth = reference.segmentLed[i] > 0.5 ? 3 : 2;
+        if (reference.segmentLed[i] <= 0.5) ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function drawAutoCorners() {
+      ctx.save();
+      ctx.fillStyle = "rgba(216,209,188,.72)";
+      ctx.strokeStyle = "#080907";
+      ctx.lineWidth = 2;
+      for (const corner of autoCorners) {
+        const [x, y] = worldToCanvas(corner.point);
+        ctx.beginPath();
+        ctx.moveTo(x, y - 6);
+        ctx.lineTo(x + 6, y);
+        ctx.lineTo(x, y + 6);
+        ctx.lineTo(x - 6, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawManualCorners() {
+      manualCorners.forEach((corner, i) => {
+        const [x, y] = worldToCanvas(corner.point);
+        ctx.save();
+        ctx.fillStyle = "#ffbd4a";
+        ctx.strokeStyle = i === selected ? "#ffffff" : "#080907";
+        ctx.lineWidth = i === selected ? 4 : 2;
+        ctx.beginPath();
+        ctx.arc(x, y, i === selected ? 10 : 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#111210";
+        ctx.font = "bold 11px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(i + 1), x, y);
+        ctx.restore();
+      });
+    }
+
+    refFile.addEventListener("change", async event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        setStatus(`Loading ${file.name}...`);
+        const text = await file.text();
+        const parsed = file.name.toLowerCase().endsWith(".csv") ? parseCsv(text) : parseJson(text);
+        loadReference(parsed);
+      } catch (error) {
+        setStatus(error.message, "bad");
+      }
+    });
+
+    loadDefaultDg.addEventListener("click", loadDefaultDgReference);
+    loadImageWaypointDg.addEventListener("click", loadImageWaypointDgReference);
+
+    hintFile.addEventListener("change", async event => {
+      const file = event.target.files[0];
+      if (!file || !reference) return;
+      try {
+        const data = JSON.parse(await file.text());
+        const distances = data.corner_distance_hints_m || data.corner_distances_m || data.corner_s_m || [];
+        const records = Array.isArray(data.corners) ? data.corners : distances;
+        manualCorners = records.map(cornerFromRecord);
+        selected = manualCorners.length ? 0 : -1;
+        sortManual(false);
+        updateAll();
+        setStatus("Corner hints loaded.", "ok");
+      } catch (error) {
+        setStatus(error.message, "bad");
+      }
+    });
+
+    speedInput.addEventListener("input", () => updateAll());
+    planeInput.addEventListener("change", () => {
+      if (!reference) return;
+      reference.plane = planeInput.value;
+      fitView();
+      updateAll();
+    });
+    nameInput.addEventListener("input", () => updateAll(false));
+
+    canvas.addEventListener("pointerdown", event => {
+      if (!reference) return;
+      const [x, y] = pointerPoint(event);
+      const hit = findMarker(x, y);
+      if (hit >= 0) {
+        selected = hit;
+        dragging = true;
+        updateAll();
+      } else {
+        addCornerFromPointer(x, y);
+        dragging = true;
+      }
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener("pointermove", event => {
+      if (!reference || !dragging || selected < 0) return;
+      const [x, y] = pointerPoint(event);
+      updateCornerFromPointer(selected, x, y);
+    });
+
+    canvas.addEventListener("pointerup", event => {
+      dragging = false;
+      sortManual(true);
+      updateAll();
+      try { canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+    });
+
+    document.getElementById("useAuto").addEventListener("click", () => {
+      if (!reference) return;
+      manualCorners = autoCorners.map(c => sToCorner(c.s_m));
+      selected = manualCorners.length ? 0 : -1;
+      updateAll();
+    });
+    document.getElementById("sortCorners").addEventListener("click", () => {
+      sortManual(true);
+      updateAll();
+    });
+    document.getElementById("deleteCorner").addEventListener("click", () => {
+      if (selected < 0) return;
+      manualCorners.splice(selected, 1);
+      selected = Math.min(selected, manualCorners.length - 1);
+      updateAll();
+    });
+    document.getElementById("clearCorners").addEventListener("click", () => {
+      manualCorners = [];
+      selected = -1;
+      updateAll();
+    });
+    document.getElementById("copyJson").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(output.value);
+        setStatus("JSON copied.", "ok");
+      } catch (_) {
+        output.select();
+        document.execCommand("copy");
+        setStatus("JSON copied.", "ok");
+      }
+    });
+    document.getElementById("downloadJson").addEventListener("click", () => {
+      const blob = new Blob([output.value], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(nameInput.value || "corner_hints").replace(/[^a-z0-9_-]+/gi, "_")}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    window.addEventListener("resize", draw);
+    updateAll();
+  </script>
+</body>
+</html>

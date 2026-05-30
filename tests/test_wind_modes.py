@@ -12,7 +12,18 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 from src.env.wind_modes import (
-    M0Wind, M1Wind, M2Wind, M3Wind, WindMode, make_wind_mode,
+    M1_FORCE_MAX_N,
+    M1_FORCE_MIN_N,
+    M2_FORCE_BASE_MAX_N,
+    M2_FORCE_BASE_MIN_N,
+    M2_FORCE_GUST_MAX_N,
+    M2_FORCE_GUST_MIN_N,
+    M0Wind,
+    M1Wind,
+    M2Wind,
+    M3Wind,
+    WindMode,
+    make_wind_mode,
 )
 
 
@@ -36,6 +47,7 @@ def test_m1_is_nonzero_constant_and_seed_reproducible():
     assert f0.shape == (3,)
     assert f0.dtype == np.float32
     assert np.linalg.norm(f0) > 0.0
+    assert M1_FORCE_MIN_N <= np.linalg.norm(f0) <= M1_FORCE_MAX_N
     np.testing.assert_allclose(f0, f1, atol=1e-7)
 
     wind_same = M1Wind()
@@ -52,6 +64,8 @@ def test_m2_is_nonzero_time_varying_and_seed_reproducible():
     assert f0.dtype == np.float32
     assert np.linalg.norm(f0) > 0.0
     assert np.linalg.norm(f1) > 0.0
+    assert np.linalg.norm(f0) <= M2_FORCE_BASE_MAX_N + M2_FORCE_GUST_MAX_N
+    assert np.linalg.norm(f1) >= M2_FORCE_BASE_MIN_N
     assert not np.allclose(f0, f1)
 
     wind_same = M2Wind()

@@ -21,7 +21,7 @@ SCHEDULE_SIGMA_M = 0.15
 W_PATH = 0.6
 W_SCHEDULE = 1.0
 W_NEW_TARGET = 1.2
-W_OFF_TARGET = 1.6
+W_OFF_TARGET = 3.0
 W_REPAINT = 0.2
 W_ACTION_MAG = 0.8
 W_ACTION_RATE = 0.3
@@ -122,7 +122,7 @@ def _apply_env_reward_overrides() -> None:
     path = Path(raw_path).expanduser()
     if not path.exists():
         raise RuntimeError(f"LIGHTPAINT_REWARD_CONFIG 경로가 존재하지 않습니다: {path}")
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         raise RuntimeError("LIGHTPAINT_REWARD_CONFIG는 JSON object여야 합니다")

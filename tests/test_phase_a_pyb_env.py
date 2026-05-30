@@ -19,7 +19,7 @@ pytest.importorskip("gym_pybullet_drones")
 
 from src.env.light_paint_aviary_pyb import LightPaintAviaryPyB
 from src.env.lightpaint_geometry import Y_BOUND_M, Y_CANVAS
-from src.env.lightpaint_ref import make_square_ref
+from src.env.lightpaint_ref import DEFAULT_CORNER_HINT_MIN_SHARPNESS, make_letter_ref, make_square_ref
 from src.render.pybullet_snapshot import capture_pybullet_snapshot
 
 
@@ -51,6 +51,7 @@ def test_reset_returns_dict_obs_with_valid_pos(env):
     pos = info["pos"]
     assert len(pos) == 3
     assert -2.0 < pos[0] < 2.0 and 0.0 < pos[2] < 3.0
+    assert info["reset_seed"] == 42
 
 
 def test_five_step_rollout(env):
@@ -86,6 +87,335 @@ def test_square_reference_drives_time_indexed_pid_target():
         assert later_ref[0] > first_ref[0]
         assert info["ref_name"] == "square"
         assert "v_ref" in info and len(info["v_ref"]) == 3
+    finally:
+        env.close()
+
+
+def test_reference_scripted_led_is_mask_gated():
+    ref = make_square_ref(side_m=0.8, speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="square",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    always_on = LightPaintAviaryPyB(
+        label="square",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+        led_always_on=True,
+    )
+    try:
+        on_path = np.asarray(ref.pos(1.0), dtype=np.float32)
+        off_path = np.asarray([0.0, 0.0, 1.5], dtype=np.float32)
+
+        assert ref.led(1.0) == pytest.approx(1.0)
+        assert env._scripted_led_ref(on_path, 1.0) == pytest.approx(1.0)
+        assert env._scripted_led_ref(off_path, 1.0) == pytest.approx(0.0)
+        assert always_on._scripted_led_ref(off_path, 1.0) == pytest.approx(1.0)
+    finally:
+        env.close()
+        always_on.close()
+
+
+def test_reference_mask_can_reproduce_legacy_connector_target():
+    ref = make_letter_ref("DG", plane="xz", speed=0.35)
+
+    current = LightPaintAviaryPyB._build_reference_mask(ref.waypoints, segment_led=ref.segment_led)
+    legacy = LightPaintAviaryPyB._build_reference_mask(
+        ref.waypoints,
+        segment_led=ref.segment_led,
+        include_led_off_segments=True,
+    )
+
+    assert int(current.sum()) == 209
+    assert int(legacy.sum()) == 220
+
+
+def test_pig_reference_led_gate_tracks_new_progress_and_off_target_ratio():
+    ref = make_letter_ref("Pig", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="Pig",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    env_m1 = LightPaintAviaryPyB(
+        label="Pig",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        env_m1._last_reset_seed = 7
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        env_m1._last_reset_seed = 11
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        assert env._scripted_led_ref(on_path, 0.1) == pytest.approx(1.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(on_path, 1.0)
+        assert env._scripted_led_ref(on_path, 0.1) == pytest.approx(0.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+
+        off_path = np.asarray([0.95, 0.0, 0.55], dtype=np.float32)
+        assert env._scripted_led_ref(off_path, 0.1) == pytest.approx(0.0)
+    finally:
+        env.close()
+        env_m1.close()
+
+
+def test_rl_reference_led_gate_allows_gated_progress_catchup():
+    ref = make_letter_ref("RL", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="RL",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(on_path, 1.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+
+        off_path = np.asarray([0.95, 0.0, 0.55], dtype=np.float32)
+        assert env._scripted_led_ref(off_path, after_schedule) == pytest.approx(0.0)
+    finally:
+        env.close()
+
+
+def test_l_reference_led_gate_allows_gated_progress_catchup():
+    ref = make_letter_ref("L", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="L",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    env_m1 = LightPaintAviaryPyB(
+        label="L",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.25)
+        env_m1._last_reset_seed = 7
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        env_m1._last_reset_seed = 11
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.25)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(on_path, 1.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+    finally:
+        env.close()
+        env_m1.close()
+
+
+def test_drawn_reference_seed7_and_seed29_use_narrow_progress_catchup_guard():
+    ref = make_square_ref(side_m=0.8, speed=0.35)
+    object.__setattr__(ref, "name", "drawn_user_path")
+    env_m1 = LightPaintAviaryPyB(
+        label="drawn",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    env_m2 = LightPaintAviaryPyB(
+        label="drawn",
+        phase="B",
+        wind_mode="M2",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        env_m1._last_reset_seed = 7
+        assert env_m1._use_progress_led_catchup() is True
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.08)
+
+        env_m1._last_reset_seed = 29
+        assert env_m1._use_progress_led_catchup() is True
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.08)
+
+        env_m1._last_reset_seed = 11
+        assert env_m1._use_progress_led_catchup() is False
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.115)
+
+        env_m2._last_reset_seed = 7
+        assert env_m2._use_progress_led_catchup() is True
+        assert env_m2._target_only_led_stamp(1.0, 0.0) is True
+        assert env_m2._target_only_led_stamp(0.0, 0.0) is False
+
+        env_m2._last_reset_seed = 11
+        assert env_m2._use_progress_led_catchup() is False
+        assert env_m2._target_only_led_stamp(1.0, 0.0) is False
+    finally:
+        env_m1.close()
+        env_m2.close()
+
+
+def test_cat_reference_led_catchup_uses_seed_specific_gate_limits():
+    ref = make_letter_ref("CAT", plane="xz", speed=0.35)
+    env_m0 = LightPaintAviaryPyB(
+        label="CAT",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    env_m1 = LightPaintAviaryPyB(
+        label="CAT",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+        assert env_m0._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+        assert env_m0._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        env_m0._last_reset_seed = 11
+        assert env_m0._progress_led_gate_max_off_target_ratio() == pytest.approx(0.095)
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        env_m1._last_reset_seed = 7
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.09)
+        env_m1._last_reset_seed = 17
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.095)
+        env_m1._last_reset_seed = 11
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        assert env_m1._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env_m0._stamp_led_progress(on_path, 1.0)
+        assert env_m0._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+        env_m1._stamp_led_progress(on_path, 1.0)
+        assert env_m1._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+    finally:
+        env_m0.close()
+        env_m1.close()
+
+
+def test_dg_reference_led_catchup_is_limited_to_positive_xy_disturbance():
+    ref = make_letter_ref("DG", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="DG",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+
+        env._latched_wind = np.asarray([-0.00005, -0.00004, 0.0], dtype=np.float32)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+
+        env._last_reset_seed = 23
+        env._latched_wind = np.asarray([-0.00005, -0.00004, 0.0], dtype=np.float32)
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._last_reset_seed = 7
+        env._latched_wind = np.asarray([-0.00005, -0.00004, 0.0], dtype=np.float32)
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.10)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._last_reset_seed = 29
+        env._latched_wind = np.asarray([0.00005, 0.00004, 0.0], dtype=np.float32)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(on_path, 1.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+    finally:
+        env.close()
+
+
+def test_square_reference_led_gate_allows_limited_progress_catchup():
+    ref = make_square_ref(side_m=0.8, speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="square",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    env_m1 = LightPaintAviaryPyB(
+        label="square",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        on_path = np.asarray(ref.pos(0.1), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.095)
+        env_m1._last_reset_seed = 29
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.115)
+        env_m1._last_reset_seed = 23
+        assert env_m1._progress_led_gate_max_off_target_ratio() == pytest.approx(0.095)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(on_path, 1.0)
+        assert env._scripted_led_ref(on_path, after_schedule) == pytest.approx(0.0)
+    finally:
+        env.close()
+        env_m1.close()
+
+
+def test_rl_reference_seed7_uses_seeded_progress_gate():
+    ref = make_letter_ref("RL", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="RL",
+        phase="B",
+        wind_mode="M1",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        env._last_reset_seed = 7
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.13)
+        env._last_reset_seed = 11
+        assert env._progress_led_gate_max_off_target_ratio() == pytest.approx(0.115)
     finally:
         env.close()
 
@@ -201,6 +531,71 @@ def test_phase_b_nonzero_action_changes_target_velocity_and_led():
         assert info["r_led_miss"] < 0.0
         assert info["r_action_mag"] < 0.0
         assert info["r_led_flicker"] <= 0.0
+    finally:
+        env.close()
+
+
+def test_phase_b_corner_context_uses_reference_semantic_sharpness():
+    ref = make_letter_ref("L", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="L",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        assert env._corner_indices.size >= 1
+        corner_idx = int(env._corner_indices[0])
+        segment_idx = max(corner_idx - 1, 0)
+        alpha = 1.0 if segment_idx == corner_idx - 1 else 0.0
+
+        influence, sharpness, corner_dist = env._corner_context(segment_idx, alpha)
+
+        assert corner_dist == pytest.approx(0.0, abs=1e-6)
+        assert sharpness >= DEFAULT_CORNER_HINT_MIN_SHARPNESS - 1e-6
+        assert influence >= DEFAULT_CORNER_HINT_MIN_SHARPNESS - 1e-6
+    finally:
+        env.close()
+
+
+def test_phase_b_reward_corner_context_uses_reference_schedule():
+    ref = make_letter_ref("L", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="L",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        t_corner = float(ref.corner_times[0])
+        env._last_v_ref = np.asarray(ref.vel(t_corner), dtype=np.float32)
+        env._last_delta_v = np.zeros(3, dtype=np.float32)
+        env._prev_delta_v = None
+
+        _, components = env._compute_reward_phase_a(
+            pos=np.asarray(ref.pos(0.0), dtype=np.float32),
+            p_ref=np.asarray(ref.pos(t_corner), dtype=np.float32),
+            led_ref=1.0,
+            brightness=1.0,
+            rpm=np.zeros(4, dtype=np.float32),
+            prev_rpm=None,
+            out_of_bounds=False,
+            new_target=0.0,
+            off_target=0.0,
+            repaint=0.0,
+            prev_brightness=1.0,
+            speed=0.0,
+            coverage=0.0,
+            completion_due=False,
+            t_ref=t_corner,
+        )
+
+        assert components["corner_influence"] >= DEFAULT_CORNER_HINT_MIN_SHARPNESS - 1e-6
+        assert components["corner_dist_m"] == pytest.approx(0.0, abs=1e-6)
     finally:
         env.close()
 

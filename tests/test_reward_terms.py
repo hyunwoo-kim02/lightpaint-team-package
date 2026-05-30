@@ -71,6 +71,18 @@ def test_reward_config_env_override_file(monkeypatch, tmp_path):
     assert restored.RESIDUAL_DELTA_MAX == pytest.approx(0.5)
 
 
+def test_reward_config_env_override_accepts_windows_utf8_bom(monkeypatch, tmp_path):
+    override_path = tmp_path / "reward_override_bom.json"
+    override_path.write_text(json.dumps({"W_PATH": 1.25}), encoding="utf-8-sig")
+    monkeypatch.setenv("LIGHTPAINT_REWARD_CONFIG", str(override_path))
+
+    overridden = importlib.reload(cfg)
+    assert overridden.W_PATH == pytest.approx(1.25)
+
+    monkeypatch.delenv("LIGHTPAINT_REWARD_CONFIG")
+    importlib.reload(cfg)
+
+
 def test_reward_components_include_contract_keys():
     total, components = compute_lightpaint_reward(**_reward_kwargs())
 

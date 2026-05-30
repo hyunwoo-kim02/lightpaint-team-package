@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "source": "tools/corner_hint_editor.html",
+  "name": "DG_manual_corners",
+  "reference_name": "letter_DG_xz_legacy_connector_off",
+  "trajectory": "letter",
+  "label": "DG",
+  "plane": "xz",
+  "speed": 0.35,
+  "corner_distance_hints_m": [
+    0.453296,
+    0.656781,
+    1.751431,
+    2.072871,
+    2.366938
+  ],
+  "corners": [
+    {
+      "id": 1,
+      "s_m": 0.453296,
+      "t_s": 1.295131,
+      "point": [
+        -0.119774,
+        0,
+        1.36456
+      ]
+    },
+    {
+      "id": 2,
+      "s_m": 0.656781,
+      "t_s": 1.876517,
+      "point": [
+        -0.303544,
+        0,
+        1.364884
+      ]
+    },
+    {
+      "id": 3,
+      "s_m": 1.751431,
+      "t_s": 5.004089,
+      "point": [
+        0.056403,
+        0,
+        1.570947
+      ]
+    },
+    {
+      "id": 4,
+      "s_m": 2.072871,
+      "t_s": 5.922489,
+      "point": [
+        0.195427,
+        0,
+        1.335012
+      ]
+    },
+    {
+      "id": 5,
+      "s_m": 2.366938,
+      "t_s": 6.76268,
+      "point": [
+        0.236594,
+        0,
+        1.478571
+      ]
+    }
+  ]
+}

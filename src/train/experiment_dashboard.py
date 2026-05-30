@@ -9,8 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,7 +24,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
+
+from src.train import run_final_goal_batch as final_batch
 
 _INHERITED_REWARD_CONFIG = os.environ.pop("LIGHTPAINT_REWARD_CONFIG", None)
 try:
@@ -35,6 +39,9 @@ _HERE = Path(__file__).resolve().parent
 _PKG_ROOT = _HERE.parent.parent
 _DASHBOARD_ROOT = _PKG_ROOT / "artifacts" / "dashboard"
 _RUNS_ROOT = _DASHBOARD_ROOT / "runs"
+_ARTIFACT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".html", ".json", ".csv", ".txt", ".log", ".zip"}
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif"}
+_VIDEO_EXTENSIONS = {".mp4", ".webm"}
 
 
 REWARD_FIELDS: tuple[dict[str, Any], ...] = (
@@ -90,13 +97,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "corner_window_m": 0.18,
     "init_box_size": 0.0,
     "gui": False,
+    "gui_hold_seconds": 5.0,
     "led_always_on": False,
     "ctrl_freq": 30,
     "pyb_freq": 240,
     "seed": 7,
-    "total_timesteps": 2048,
-    "n_steps": 64,
-    "batch_size": 32,
+    "total_timesteps": 100000,
+    "n_steps": 256,
+    "batch_size": 64,
     "n_epochs": 2,
     "learning_rate": 0.0003,
     "gamma": 0.99,
@@ -111,13 +119,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "bc_batch_size": 64,
     "bc_learning_rate": 0.001,
     "bc_nonzero_weight": 1.0,
-    "trained_action_filter": "none",
-    "device": "cpu",
+    "trained_action_filter": final_batch.DEFAULT_TRAINED_ACTION_FILTER,
+    "device": "cuda",
     "verbose": 0,
     "save_video": False,
     "load_model": "",
     "eval_only": False,
     "reset_num_timesteps": False,
+}
+
+DEFAULT_BATCH_CONFIG: dict[str, Any] = {
+    "batch_run_name": "final_goal_batch_standard",
+    "batch_profile": "standard",
+    "batch_dry_run": True,
+    "batch_resume": True,
+    "batch_continue_on_error": True,
+    "batch_trained_action_filter": final_batch.DEFAULT_TRAINED_ACTION_FILTER,
+    "batch_teacher_window_m": 0.15,
+    "batch_device": "cuda",
+    "batch_eval_only": False,
+    "batch_model_manifest": "",
 }
 
 EXPERIMENT_STAGES: tuple[dict[str, Any], ...] = (
@@ -147,7 +168,7 @@ EXPERIMENT_STAGES: tuple[dict[str, Any], ...] = (
         "goal": "외란 없는 full horizon에서 코너 감속과 path tracking 개선을 실제 학습 목표로 확인합니다.",
         "preset": "short",
         "wind_mode": "M0",
-        "recommended": {"trajectory": "square", "max_steps": "", "total_timesteps": 20000, "bc_epochs": 0},
+        "recommended": {"trajectory": "square", "max_steps": "", "total_timesteps": 100000, "n_steps": 256, "batch_size": 64, "bc_epochs": 2, "bc_episodes": 8},
         "pass": "corner path RMSE가 zero-action보다 20% 이상 줄고, 직선 path RMSE가 10% 이상 악화되지 않아야 합니다.",
         "next": "완료된 model_path를 다음 M1 실험의 load_model로 재사용합니다.",
     },
@@ -157,7 +178,7 @@ EXPERIMENT_STAGES: tuple[dict[str, Any], ...] = (
         "goal": "M0에서 얻은 weight를 이어받아 약한 external force 환경에서 tracking과 painting coverage를 유지합니다.",
         "preset": "robust",
         "wind_mode": "M1",
-        "recommended": {"trajectory": "letter", "label": "L", "max_steps": "", "total_timesteps": 50000},
+        "recommended": {"trajectory": "letter", "label": "L", "max_steps": "", "total_timesteps": 100000, "n_steps": 256, "batch_size": 64, "bc_epochs": 2, "bc_episodes": 8},
         "pass": "crash=0, painting coverage가 M0 zero baseline의 90% 이상, straight path RMSE가 허용 범위 내여야 합니다.",
         "next": "M1 model_path를 M2 실험의 load_model로 재사용합니다.",
     },
@@ -167,7 +188,7 @@ EXPERIMENT_STAGES: tuple[dict[str, Any], ...] = (
         "goal": "더 강한 external force 조건에서도 경로 이탈과 off-target painting을 억제합니다.",
         "preset": "robust",
         "wind_mode": "M2",
-        "recommended": {"trajectory": "letter", "label": "L", "max_steps": "", "total_timesteps": 100000},
+        "recommended": {"trajectory": "letter", "label": "L", "max_steps": "", "total_timesteps": 200000, "n_steps": 256, "batch_size": 64, "bc_epochs": 2, "bc_episodes": 8},
         "pass": "crash=0, coverage 유지, corner/straight metric 악화가 허용 범위 안이어야 합니다.",
         "next": "letter/drawn final painting 실험으로 이동합니다.",
     },
@@ -247,6 +268,7 @@ NUMERIC_ARGS: dict[str, tuple[str, type]] = {
     "max_steps": ("--max-steps", int),
     "corner_window_m": ("--corner-window-m", float),
     "init_box_size": ("--init-box-size", float),
+    "gui_hold_seconds": ("--gui-hold-seconds", float),
     "ctrl_freq": ("--ctrl-freq", int),
     "pyb_freq": ("--pyb-freq", int),
     "seed": ("--seed", int),
@@ -352,6 +374,20 @@ def _normalize_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     return config, reward
 
 
+def _normalize_batch_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, float]]:
+    config = dict(DEFAULT_BATCH_CONFIG)
+    config.update(payload.get("batch") or {})
+    reward_raw = payload.get("reward") or _reward_defaults()
+    reward: dict[str, float] = {}
+    allowed = {field["key"] for field in REWARD_FIELDS}
+    for key, value in reward_raw.items():
+        if key in allowed:
+            reward[key] = float(value)
+    for key, value in _reward_defaults().items():
+        reward.setdefault(key, value)
+    return config, reward
+
+
 def _validate_config(config: dict[str, Any], reward: dict[str, float]) -> list[str]:
     issues: list[str] = []
     trajectory = str(config.get("trajectory", "square"))
@@ -399,6 +435,7 @@ def _validate_config(config: dict[str, Any], reward: dict[str, float]) -> list[s
     _require_positive("bc_learning_rate", "bc_learning_rate")
     _require_nonnegative("settle_time", "settle_time")
     _require_nonnegative("init_box_size", "init_box_size")
+    _require_nonnegative("gui_hold_seconds", "gui_hold_seconds")
     _require_nonnegative("total_timesteps", "total_timesteps")
     _require_nonnegative("ent_coef", "ent_coef")
     _require_nonnegative("teacher_gain", "teacher_gain")
@@ -464,6 +501,36 @@ def _validate_config(config: dict[str, Any], reward: dict[str, float]) -> list[s
     return issues
 
 
+def _validate_batch_config(config: dict[str, Any], reward: dict[str, float]) -> list[str]:
+    issues: list[str] = []
+    if str(config.get("batch_profile")) not in final_batch.PROFILE_DEFAULTS:
+        allowed = ", ".join(final_batch.PROFILE_DEFAULTS)
+        issues.append(f"batch_profile은 {allowed} 중 하나여야 합니다")
+    if str(config.get("batch_trained_action_filter", "none")) not in {"none", "corner_tangent_decel"}:
+        issues.append("batch_trained_action_filter 값이 올바르지 않습니다")
+    if str(config.get("batch_device", "cuda")) not in {"cuda", "cpu"}:
+        issues.append("batch_device는 cuda 또는 cpu여야 합니다")
+    try:
+        teacher_window_m = float(config.get("batch_teacher_window_m"))
+        if teacher_window_m <= 0.0:
+            issues.append("batch_teacher_window_m은 0보다 커야 합니다")
+    except (TypeError, ValueError):
+        issues.append("batch_teacher_window_m은 유효한 숫자여야 합니다")
+    if not str(config.get("batch_run_name") or "").strip():
+        issues.append("batch_run_name이 필요합니다")
+    if bool(config.get("batch_eval_only")) and not str(config.get("batch_model_manifest") or "").strip():
+        issues.append("batch_eval_only는 batch_model_manifest 경로가 필요합니다")
+    reward_ranges = {field["key"]: field for field in REWARD_FIELDS}
+    for key, value in reward.items():
+        if not isinstance(value, (int, float)) or value != value:
+            issues.append(f"{key}는 유효한 숫자이어야 합니다")
+            continue
+        field = reward_ranges.get(key)
+        if field and not (float(field["min"]) <= float(value) <= float(field["max"])):
+            issues.append(f"{key}는 [{field['min']}, {field['max']}] 범위여야 합니다")
+    return issues
+
+
 def _append_arg(command: list[str], flag: str, value: Any) -> None:
     if _is_empty(value):
         return
@@ -499,6 +566,8 @@ def _build_command(config: dict[str, Any], output_dir: Path) -> list[str]:
             continue
         if key in {"width_m", "height_m"} and config.get("trajectory") == "square":
             continue
+        if key == "gui_hold_seconds" and not bool(config.get("gui")):
+            continue
         command.extend([flag, str(_coerce_number(value, kind, key))])
 
     smooth_ref = config.get("smooth_ref")
@@ -519,6 +588,31 @@ def _build_command(config: dict[str, Any], output_dir: Path) -> list[str]:
     return command
 
 
+def _build_batch_command(config: dict[str, Any], output_dir: Path) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "src.train.run_final_goal_batch",
+        "--profile",
+        str(config.get("batch_profile") or "standard"),
+        "--output-dir",
+        str(output_dir),
+    ]
+    if bool(config.get("batch_dry_run")):
+        command.append("--dry-run")
+    if not bool(config.get("batch_resume")):
+        command.append("--no-resume")
+    if bool(config.get("batch_continue_on_error")):
+        command.append("--continue-on-error")
+    if bool(config.get("batch_eval_only")):
+        command.append("--eval-only")
+        command.extend(["--model-manifest", str(config.get("batch_model_manifest") or "")])
+    command.extend(["--trained-action-filter", str(config.get("batch_trained_action_filter") or "none")])
+    command.extend(["--teacher-window-m", str(config.get("batch_teacher_window_m") or 0.15)])
+    command.extend(["--device", str(config.get("batch_device") or "cuda")])
+    return command
+
+
 def _quote_command(command: list[str]) -> str:
     parts = []
     for item in command:
@@ -532,7 +626,7 @@ def _quote_command(command: list[str]) -> str:
 
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _read_json_file(path: Path) -> Any | None:
@@ -561,7 +655,7 @@ def _run_status(run_id: str, output_dir: Path) -> str:
             return "stopped"
         return "complete" if poll == 0 else "failed"
     meta = _read_json_file(output_dir / "dashboard_run.json") or {}
-    if (output_dir / "summary.json").exists():
+    if (output_dir / "summary.json").exists() or (output_dir / "batch_summary.json").exists():
         return "complete"
     return str(meta.get("status", "unknown"))
 
@@ -610,10 +704,67 @@ def _model_path_from_summary(summary: dict[str, Any] | None) -> str | None:
     return str(model_path) if model_path else None
 
 
+def _artifact_kind(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _VIDEO_EXTENSIONS:
+        return "video"
+    if ext == ".html":
+        return "html"
+    return "file"
+
+
+def _is_frame_artifact(rel_path: Path) -> bool:
+    return any(part.endswith("_frames") for part in rel_path.parts[:-1])
+
+
+def _artifact_url(run_id: str, rel_path: Path) -> str:
+    rel = rel_path.as_posix()
+    return f"/api/artifacts/{quote(run_id)}/{quote(rel, safe='/')}"
+
+
+def _list_run_artifacts(run_dir: Path) -> list[dict[str, Any]]:
+    if not run_dir.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for path in sorted(run_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _ARTIFACT_EXTENSIONS:
+            continue
+        rel_path = path.relative_to(run_dir)
+        if _is_frame_artifact(rel_path):
+            continue
+        stat = path.stat()
+        items.append(
+            {
+                "name": path.name,
+                "rel_path": rel_path.as_posix(),
+                "kind": _artifact_kind(path),
+                "size_bytes": stat.st_size,
+                "updated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "url": _artifact_url(run_dir.name, rel_path),
+            }
+        )
+    return items
+
+
+def _resolve_run_artifact(run_id: str, rel_path: str) -> Path:
+    run_dir = (_RUNS_ROOT / run_id).resolve()
+    file_path = (run_dir / rel_path).resolve()
+    try:
+        file_path.relative_to(run_dir)
+    except ValueError as exc:
+        raise FileNotFoundError("artifact path escapes run directory") from exc
+    if not file_path.is_file():
+        raise FileNotFoundError("artifact not found")
+    return file_path
+
+
 def _summarize_run(run_dir: Path) -> dict[str, Any]:
     run_id = run_dir.name
     meta = _read_json_file(run_dir / "dashboard_run.json") or {}
     summary = _read_json_file(run_dir / "summary.json")
+    batch_summary = _read_json_file(run_dir / "batch_summary.json")
     status = _run_status(run_id, run_dir)
     log_path = run_dir / "run.log"
     log_updated_at = None
@@ -625,13 +776,16 @@ def _summarize_run(run_dir: Path) -> dict[str, Any]:
         "created_at": meta.get("created_at"),
         "finished_at": meta.get("finished_at"),
         "return_code": meta.get("return_code"),
+        "kind": meta.get("kind", "single"),
         "log_updated_at": log_updated_at,
         "title": meta.get("title", run_id),
         "output_dir": str(run_dir),
         "command": meta.get("command", ""),
         "model_path": _model_path_from_summary(summary),
         "quality_score": _quality_score(summary),
+        "artifacts": _list_run_artifacts(run_dir),
         "summary": summary,
+        "batch_summary": batch_summary,
     }
     return result
 
@@ -654,6 +808,25 @@ def _preview(payload: dict[str, Any]) -> dict[str, Any]:
         "command": _quote_command(command),
         "python": sys.executable,
         "cwd": str(_PKG_ROOT),
+        "reward_overrides": reward,
+    }
+
+
+def _preview_batch(payload: dict[str, Any]) -> dict[str, Any]:
+    config, reward = _normalize_batch_payload(payload)
+    issues = _validate_batch_config(config, reward)
+    run_title = _safe_slug(str(config.get("batch_run_name") or "final_goal_batch"))
+    preview_dir = _RUNS_ROOT / f"{_now_token()}_{run_title}"
+    command = _build_batch_command(config, preview_dir)
+    profile = str(config.get("batch_profile") or "standard")
+    defaults = final_batch.PROFILE_DEFAULTS[profile]
+    return {
+        "issues": issues,
+        "command": _quote_command(command),
+        "python": sys.executable,
+        "cwd": str(_PKG_ROOT),
+        "profile": profile,
+        "profile_defaults": defaults,
         "reward_overrides": reward,
     }
 
@@ -734,6 +907,83 @@ def _start_run(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _start_batch_run(payload: dict[str, Any]) -> dict[str, Any]:
+    config, reward = _normalize_batch_payload(payload)
+    issues = _validate_batch_config(config, reward)
+    if issues:
+        return {"ok": False, "issues": issues}
+
+    title = _safe_slug(str(config.get("batch_run_name") or "final_goal_batch"))
+    run_id = f"{_now_token()}_{title}"
+    output_dir = _RUNS_ROOT / run_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    reward_path = output_dir / "reward_overrides.json"
+    log_path = output_dir / "run.log"
+    command = _build_batch_command(config, output_dir)
+    _write_json(reward_path, reward)
+
+    meta = {
+        "run_id": run_id,
+        "title": title,
+        "kind": "batch",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "running",
+        "python": sys.executable,
+        "cwd": str(_PKG_ROOT),
+        "command": _quote_command(command),
+        "batch_config": config,
+        "reward_config": str(reward_path),
+        "reward_overrides": reward,
+    }
+    _write_json(output_dir / "dashboard_run.json", meta)
+
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["LIGHTPAINT_REWARD_CONFIG"] = str(reward_path)
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    log_file = log_path.open("w", encoding="utf-8", errors="replace")
+    process = subprocess.Popen(
+        command,
+        cwd=str(_PKG_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=env,
+        creationflags=creationflags,
+    )
+    job = Job(run_id=run_id, process=process, output_dir=output_dir, log_path=log_path)
+    STATE.add(job)
+
+    def _pipe_log() -> None:
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                log_file.write(line)
+                log_file.flush()
+            return_code = process.wait()
+            meta["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            if job.stopped:
+                meta["status"] = "stopped"
+            else:
+                meta["status"] = "complete" if return_code == 0 else "failed"
+            meta["return_code"] = return_code
+            _write_json(output_dir / "dashboard_run.json", meta)
+        finally:
+            log_file.close()
+
+    threading.Thread(target=_pipe_log, name=f"dashboard-batch-log-{run_id}", daemon=True).start()
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "output_dir": str(output_dir),
+        "command": meta["command"],
+    }
+
+
 def _stop_run(run_id: str) -> dict[str, Any]:
     job = STATE.get(run_id)
     if job is None:
@@ -767,6 +1017,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, file_path: Path) -> None:
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(file_path.stat().st_size))
+        self.send_header("Content-Disposition", f'inline; filename="{file_path.name}"')
+        self.end_headers()
+        with file_path.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile)
+
     def _read_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
@@ -788,6 +1048,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(
                 {
                     "defaults": DEFAULT_CONFIG,
+                    "batch_defaults": DEFAULT_BATCH_CONFIG,
+                    "batch_profiles": final_batch.PROFILE_DEFAULTS,
                     "reward_defaults": _reward_defaults(),
                     "reward_fields": REWARD_FIELDS,
                     "experiment_stages": EXPERIMENT_STAGES,
@@ -799,6 +1061,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/runs":
             self._send_json({"runs": _list_runs()})
+            return
+        if path.startswith("/api/artifacts/"):
+            rest = path[len("/api/artifacts/") :]
+            if "/" not in rest:
+                self.send_error(404)
+                return
+            run_id_raw, rel_raw = rest.split("/", 1)
+            run_id = _safe_slug(unquote(run_id_raw))
+            try:
+                file_path = _resolve_run_artifact(run_id, unquote(rel_raw))
+            except FileNotFoundError:
+                self.send_error(404)
+                return
+            self._send_file(file_path)
             return
         if path.startswith("/api/runs/"):
             run_id = _safe_slug(unquote(path.rsplit("/", 1)[-1]))
@@ -819,8 +1095,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/api/preview":
                 self._send_json(_preview(self._read_body()))
                 return
+            if path == "/api/batch-preview":
+                self._send_json(_preview_batch(self._read_body()))
+                return
             if path == "/api/runs":
                 result = _start_run(self._read_body())
+                self._send_json(result, status=200 if result.get("ok") else 400)
+                return
+            if path == "/api/batches":
+                result = _start_batch_run(self._read_body())
                 self._send_json(result, status=200 if result.get("ok") else 400)
                 return
             if path.startswith("/api/runs/") and path.endswith("/stop"):
@@ -1149,6 +1432,61 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 22px;
       overflow-wrap: anywhere;
     }
+    .artifact-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .artifact-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdf7;
+      padding: 10px;
+      min-width: 0;
+    }
+    .artifact-card img,
+    .artifact-card video,
+    .artifact-card iframe {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      object-fit: contain;
+      display: block;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #111814;
+    }
+    .artifact-card iframe {
+      background: #fffdf7;
+    }
+    .artifact-title {
+      margin-top: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .artifact-meta {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+    .artifact-links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .artifact-link {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 9px;
+      background: #fffdf7;
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 12px;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
     .stage-grid, .criteria-grid {
       display: grid;
       gap: 10px;
@@ -1323,6 +1661,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="tabs">
         <button class="tab active" data-tab="setup">실험 설정</button>
         <button class="tab" data-tab="pipeline">실험 로드맵</button>
+        <button class="tab" data-tab="batch">전체 Batch</button>
         <button class="tab" data-tab="reward">Reward 튜닝</button>
         <button class="tab" data-tab="run">실행</button>
         <button class="tab" data-tab="results">결과</button>
@@ -1382,7 +1721,7 @@ INDEX_HTML = r"""<!doctype html>
               <code>overall_pass=false</code>여도 실패로 보지 않습니다.
             </div>
             <div style="margin-top:12px" class="notice">
-              권장 흐름: smoke 확인 -> M0 sanity -> M0 full 학습 -> M1 외란 강건성 -> M2 외란 강건성 -> letter/drawn 최종 painting 평가.
+              권장 흐름: smoke 확인 -> 단일 M0 sanity -> 전체 Batch letters 장시간 학습 -> standard 전체 matrix -> final 최종 평가.
             </div>
           </div>
           <div class="panel span-12">
@@ -1432,8 +1771,9 @@ INDEX_HTML = r"""<!doctype html>
               <label>Settle time s<input id="settle_time" type="number" step="0.1"></label>
               <label>Control Hz<input id="ctrl_freq" type="number" step="1"></label>
               <label>PyBullet Hz<input id="pyb_freq" type="number" step="1"></label>
-              <label>Device<select id="device"><option>cpu</option><option>cuda</option></select></label>
+              <label>Device<select id="device"><option>cuda</option><option>cpu</option></select></label>
               <label class="check"><input id="gui" type="checkbox">PyBullet GUI 보기</label>
+              <label>GUI hold s<input id="gui_hold_seconds" type="number" step="0.5"></label>
               <label class="check"><input id="save_video" type="checkbox">Save video 저장</label>
               <label class="check"><input id="led_always_on" type="checkbox">LED always on</label>
               <label class="check"><input id="eval_only" type="checkbox">Eval only</label>
@@ -1462,6 +1802,56 @@ INDEX_HTML = r"""<!doctype html>
               <label>BC LR<input id="bc_learning_rate" type="number" step="0.0001"></label>
               <label>BC nonzero weight<input id="bc_nonzero_weight" type="number" step="0.1"></label>
               <label>Action filter<select id="trained_action_filter"><option>none</option><option>corner_tangent_decel</option></select></label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="batch" class="view">
+        <div class="toolbar">
+          <h2>전체 Batch 실행</h2>
+          <div class="toolbar-actions">
+            <button class="btn secondary" id="applyBatchLetters">letters 장시간 학습 적용</button>
+            <button class="btn secondary" id="applyBatchStandard">standard 전체 학습 적용</button>
+            <button class="btn secondary" id="applyBatchFinalPlan">final 최종 계획 적용</button>
+            <button class="btn secondary" id="batchPreviewBtn">Batch 명령 갱신</button>
+            <button class="btn" id="batchStartBtn">Batch 시작</button>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="panel span-5">
+            <h3>Batch profile</h3>
+            <div class="notice" style="margin-bottom:10px;">
+              최종 목표 검증은 단일 run이 아니라 여러 글자, 외란, seed를 모두 포함한 batch로 판단합니다.
+              <code>letters</code>는 짧은 smoke가 아니라 L/DG/CAT/Pig/RL 전체를 장시간 학습 대상으로 실행합니다.
+              기본값은 안전하게 dry-run 계획 확인으로 시작합니다.
+            </div>
+            <div class="field-grid">
+              <label class="wide-field">Batch run name<input id="batch_run_name"></label>
+              <label>Profile<select id="batch_profile"><option>sanity</option><option>letters</option><option>standard</option><option>final</option></select></label>
+              <label class="check"><input id="batch_dry_run" type="checkbox">Dry-run 계획만 생성</label>
+              <label class="check"><input id="batch_resume" type="checkbox">완료 run 재사용</label>
+              <label class="check"><input id="batch_continue_on_error" type="checkbox">실패해도 다음 run 진행</label>
+              <label class="check"><input id="batch_eval_only" type="checkbox">Eval-only 최종 평가</label>
+              <label class="wide-field">Model manifest<input id="batch_model_manifest" placeholder="artifacts\\...\\best_model_manifest.json"></label>
+              <label>평가 Action filter<select id="batch_trained_action_filter"><option>corner_tangent_decel</option><option>none</option></select></label>
+              <label>Teacher window m<input id="batch_teacher_window_m" type="number" step="0.01"></label>
+            </div>
+            <div id="batchProfileInfo" class="notice" style="margin-top:10px;"></div>
+          </div>
+          <div class="panel span-7">
+            <h3>Batch command</h3>
+            <pre id="batchCommandPreview"></pre>
+            <h3 style="margin-top:12px;">검증</h3>
+            <div id="batchIssues" class="issues"></div>
+          </div>
+          <div class="panel span-12">
+            <h3>사용 기준</h3>
+            <div class="notice">
+              <code>sanity</code>는 실행 경로 확인용입니다. 글자별 장시간 sweep은 <code>letters</code>,
+              팀 공유용 전체 성능 비교는 <code>standard</code>, 최종 목표 달성 주장은 <code>final</code>
+              profile의 <code>batch_summary.json</code>과
+              <code>batch_final_goal_criteria.batch_final_goal_pass</code>로 판단합니다.
             </div>
           </div>
         </div>
@@ -1529,6 +1919,11 @@ INDEX_HTML = r"""<!doctype html>
             <div id="criteriaEval" style="margin-top:8px;"></div>
           </div>
           <div class="panel span-12">
+            <h3>시각화 결과</h3>
+            <div id="artifactGallery" class="artifact-gallery"></div>
+            <div id="artifactLinks" class="artifact-links"></div>
+          </div>
+          <div class="panel span-12">
             <h3>선택 Run Log</h3>
             <pre id="selectedLog"></pre>
           </div>
@@ -1543,6 +1938,8 @@ INDEX_HTML = r"""<!doctype html>
     const BACKUP_KEY = "lightpaint_dashboard_backup_v2";
     const state = {
       defaults: {},
+      batchDefaults: {},
+      batchProfiles: {},
       rewardDefaults: {},
       rewardFields: [],
       experimentStages: [],
@@ -1584,13 +1981,14 @@ INDEX_HTML = r"""<!doctype html>
       height_m: "letter/drawn reference의 목표 높이입니다. 추천값: 비워두고 시작, 글자가 너무 작거나 크면 0.5~0.9m 범위에서 조정. square에는 적용되지 않습니다.",
       max_waypoints: "letter/drawn 경로의 waypoint 수 상한입니다. 추천값: 보통 비움. 복잡한 CAT/DG가 너무 오래 걸리면 120~250 정도로 제한합니다.",
       seed: "환경 reset, 정책 초기화, BC sample 순서 등에 쓰이는 난수 seed입니다. 추천값: 비교 실험은 7로 고정, 후보가 좋아지면 3~5개 seed로 재확인하세요.",
-      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 sanity 2048~8192, M0 후보 1만~5만, M1/M2 강건성 5만~20만부터 시작합니다.",
+      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 sanity 2048~8192, 단일 full 후보 10만부터 시작, M2/최종 후보는 20만~30만 이상을 사용합니다. 여러 글자 전체 평가는 run_final_goal_batch profile letters/standard/final을 사용하세요.",
       max_steps: "episode당 최대 step 수입니다. 추천값: 학습/평가는 비워서 자동 계산. smoke는 2~90, square 전체 평가는 대략 350~400입니다.",
       settle_time: "reference가 끝난 뒤 마지막 목표 주변에서 더 실행할 시간입니다. 추천값: 2.0s, 최종 영상/평가는 2~3s. max_steps를 비우면 자동 horizon 계산에 반영됩니다.",
       ctrl_freq: "환경 step/control frequency입니다. 추천값: 30Hz. PyBullet physics frequency보다 낮거나 같아야 합니다.",
       pyb_freq: "PyBullet physics frequency입니다. 추천값: 240Hz. ctrl_freq의 정수배여야 합니다.",
-      device: "Stable-Baselines3 정책 학습 device입니다. CUDA 환경이 확실하지 않으면 cpu가 안전합니다.",
+      device: "Stable-Baselines3 정책 학습 device입니다. CUDA를 사용할 수 있으면 cuda를 선택하세요.",
       gui: "PyBullet GUI 창을 rollout 확인용으로 띄울지 정합니다. 추천값: 기본 off. PyBullet은 프로세스당 GUI 1개만 허용하므로 PPO/BC 학습 env는 DIRECT로 실행되고, 평가 rollout 창이 순차적으로 열립니다.",
+      gui_hold_seconds: "GUI를 켰을 때 각 rollout 창을 닫기 전에 유지하는 시간입니다. 추천값: 5초. 너무 짧으면 창이 깜빡이고 바로 닫혀 보이지 않을 수 있습니다.",
       save_video: "켜면 trained rollout 시각화 영상까지 저장합니다. smoke에서는 시간이 늘어날 수 있습니다.",
       load_model: "이전 run의 PPO model zip 경로입니다. M0에서 학습한 weight를 M1/M2 실험으로 이어갈 때 이 값을 넣습니다. Results 탭의 '선택 모델로 이어서 학습' 버튼이 자동으로 채웁니다.",
       led_always_on: "scripted LED reference를 항상 ON으로 강제합니다. 실제 LED on/off 경로 검증 때는 끄는 것이 기본입니다.",
@@ -1613,17 +2011,26 @@ INDEX_HTML = r"""<!doctype html>
       bc_batch_size: "BC optimizer minibatch 크기입니다. 추천값: 64. dataset이 작으면 32도 가능합니다.",
       bc_learning_rate: "BC optimizer learning rate입니다. 추천값: 1e-3. loss가 흔들리면 3e-4로 낮춥니다.",
       bc_nonzero_weight: "teacher action이 0이 아닌 corner 감속 sample에 주는 추가 가중치입니다. 추천값: 1.0, corner sample이 묻히면 2~4.",
-      trained_action_filter: "평가 때 trained action을 그대로 쓸지, corner tangent 감속 성분만 남길지 정합니다. 추천값: 학습 비교는 none, 보수적 코너 감속 확인은 corner_tangent_decel.",
+      trained_action_filter: "평가 때 trained action을 그대로 쓸지, corner tangent 감속 성분만 남길지 정합니다. 추천값: 최종/공유 평가는 corner_tangent_decel, raw policy ablation은 none.",
+      batch_profile: "전체 batch 범위입니다. letters는 L/DG/CAT/Pig/RL 전체 글자, standard는 square/letters/drawn, final은 5 seeds 장기 평가입니다.",
+      batch_dry_run: "체크하면 실제 학습을 시작하지 않고 실행 계획과 명령만 생성합니다. 공유 전에는 먼저 켜고 계획을 확인하세요.",
+      batch_resume: "체크하면 이미 summary.json이 있는 run은 재사용합니다. 장시간 batch가 중간에 끊겨도 이어서 돌릴 때 필요합니다.",
+      batch_continue_on_error: "체크하면 한 run이 실패해도 다음 trajectory/wind/seed로 넘어갑니다. 최종 batch_summary에서 실패 run을 확인합니다.",
+      batch_eval_only: "체크하면 학습 없이 model manifest에 적힌 기존 PPO 모델들을 전체 matrix에서 평가만 합니다. 최종 목표 달성 주장은 이 모드의 final profile 결과로 확인하는 것이 가장 깔끔합니다.",
+      batch_model_manifest: "eval-only batch에서 사용할 best_model_manifest.json 경로입니다. 이전 batch 학습 산출물의 best_model_manifest.json을 넣습니다.",
+      batch_trained_action_filter: "batch 평가에서 trained rollout action을 후처리할지 정합니다. 추천값은 corner_tangent_decel이며, raw policy 비교 실험만 none을 사용합니다.",
+      batch_teacher_window_m: "batch 실행 시 teacher/action filter가 corner 전후 몇 m 구간을 볼지 정합니다. 현재 검증 기준 추천값은 0.15m입니다.",
     };
     const configKeys = [
       "run_name","trajectory","label","square_side","letter_plane","drawn_path","drawn_plane","drawn_space",
       "width_m","height_m","path_scale","max_waypoints","smooth_window_m","wind_mode","speed","settle_time",
-      "max_steps","corner_window_m","init_box_size","gui","led_always_on","ctrl_freq","pyb_freq","seed",
+      "max_steps","corner_window_m","init_box_size","gui","gui_hold_seconds","led_always_on","ctrl_freq","pyb_freq","seed",
       "total_timesteps","n_steps","batch_size","n_epochs","learning_rate","gamma","gae_lambda","ent_coef",
       "clip_range","log_std_init","teacher_gain","teacher_window_m","bc_epochs","bc_episodes","bc_batch_size",
       "bc_learning_rate","bc_nonzero_weight","trained_action_filter","device","verbose","save_video",
       "load_model","eval_only","reset_num_timesteps"
     ];
+    const batchKeys = ["batch_run_name", "batch_profile", "batch_dry_run", "batch_resume", "batch_continue_on_error", "batch_eval_only", "batch_model_manifest", "batch_trained_action_filter", "batch_teacher_window_m"];
 
     function $(id) { return document.getElementById(id); }
     async function api(url, options={}) {
@@ -1659,12 +2066,18 @@ INDEX_HTML = r"""<!doctype html>
       for (const key of configKeys) config[key] = getInput(key);
       return config;
     }
+    function collectBatch() {
+      const batch = {};
+      for (const key of batchKeys) batch[key] = getInput(key);
+      return batch;
+    }
     function collectReward() {
       const reward = {};
       for (const field of state.rewardFields) reward[field.key] = Number($("reward_" + field.key).value);
       return reward;
     }
     function payload() { return {config: collectConfig(), reward: collectReward()}; }
+    function batchPayload() { return {batch: collectBatch(), reward: collectReward()}; }
     function setDraftStatus(text) {
       const el = $("draftStatus");
       if (el) el.textContent = text;
@@ -1704,19 +2117,20 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
     function saveDraft(reason="auto") {
-      const data = {...payload(), savedAt: new Date().toISOString(), reason};
+      const data = {...payload(), batch: collectBatch(), savedAt: new Date().toISOString(), reason};
       localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
       setDraftStatus(`자동 임시저장 ${nowText()}`);
       return data;
     }
     function saveBackup(reason="backup") {
-      const data = {...payload(), savedAt: new Date().toISOString(), reason};
+      const data = {...payload(), batch: collectBatch(), savedAt: new Date().toISOString(), reason};
       localStorage.setItem(BACKUP_KEY, JSON.stringify(data));
       return data;
     }
     function applyPayload(data) {
       if (!data) return false;
       if (data.config) for (const [key, value] of Object.entries(data.config)) setInput(key, value);
+      if (data.batch) for (const [key, value] of Object.entries(data.batch)) setInput(key, value);
       if (data.reward) {
         for (const [key, value] of Object.entries(data.reward)) {
           const el = $("reward_" + key);
@@ -1726,6 +2140,7 @@ INDEX_HTML = r"""<!doctype html>
         }
       }
       refreshPreviewDebounced();
+      refreshBatchPreviewDebounced();
       return true;
     }
     function restoreStored(key) {
@@ -1856,14 +2271,47 @@ INDEX_HTML = r"""<!doctype html>
         }
       }
     }
+    function renderBatchProfileInfo() {
+      const host = $("batchProfileInfo");
+      if (!host) return;
+      const profile = getInput("batch_profile") || "standard";
+      const data = state.batchProfiles[profile] || {};
+      const trajectories = data.trajectories || "-";
+      const winds = data.wind_modes || "-";
+      const seeds = data.seeds || "-";
+      const steps = data.total_timesteps ?? "-";
+      const filter = getInput("batch_trained_action_filter") || "corner_tangent_decel";
+      const teacherWindow = getInput("batch_teacher_window_m") || "0.15";
+      const mode = getInput("batch_eval_only") ? "eval-only" : "train/eval";
+      host.innerHTML = `<strong>${profile}</strong><br>Mode: ${mode}<br>Trajectories: ${trajectories}<br>Wind modes: ${winds}<br>Seeds: ${seeds}<br>Run당 PPO step: ${steps}<br>평가 filter: ${filter}<br>Teacher window: ${teacherWindow} m`;
+    }
+    function applyBatchPreset(profile, dryRun, runName) {
+      saveBackup(`before_batch_${profile}`);
+      setInput("batch_run_name", runName);
+      setInput("batch_profile", profile);
+      setInput("batch_dry_run", dryRun);
+      setInput("batch_resume", true);
+      setInput("batch_continue_on_error", true);
+      setInput("batch_eval_only", false);
+      setInput("batch_model_manifest", "");
+      setInput("batch_trained_action_filter", "corner_tangent_decel");
+      setInput("batch_teacher_window_m", 0.15);
+      renderBatchProfileInfo();
+      saveDraft(`batch_${profile}`);
+      refreshBatchPreview();
+      const mode = dryRun ? "계획 확인" : "실제 학습";
+      toast(`${profile} batch ${mode} 설정을 적용했습니다. 실행하려면 Batch 시작을 누르세요.`, "good");
+    }
     function applyDefaults() {
       for (const [key, value] of Object.entries(state.defaults)) setInput(key, value);
+      for (const [key, value] of Object.entries(state.batchDefaults)) setInput(key, value);
       for (const [key, value] of Object.entries(state.rewardDefaults)) {
         const el = $("reward_" + key);
         const range = $("reward_range_" + key);
         if (el) el.value = value;
         if (range) range.value = value;
       }
+      renderBatchProfileInfo();
     }
     function setPresetValues(name) {
       if (name === "smoke") {
@@ -1896,10 +2344,11 @@ INDEX_HTML = r"""<!doctype html>
         setInput("label", "L");
         setInput("wind_mode", "M2");
         setInput("max_steps", "");
-        setInput("total_timesteps", 4096);
-        setInput("n_steps", 64);
-        setInput("batch_size", 32);
+        setInput("total_timesteps", 100000);
+        setInput("n_steps", 256);
+        setInput("batch_size", 64);
         setInput("bc_epochs", 2);
+        setInput("bc_episodes", 8);
         setInput("trained_action_filter", "corner_tangent_decel");
         setInput("gui", false);
       }
@@ -1956,9 +2405,14 @@ INDEX_HTML = r"""<!doctype html>
       toast(evalOnly ? "선택 모델을 평가 전용 설정으로 연결했습니다." : "선택 모델을 이어서 학습할 load_model으로 연결했습니다.", "good");
     }
     let previewTimer = null;
+    let batchPreviewTimer = null;
     function refreshPreviewDebounced() {
       clearTimeout(previewTimer);
       previewTimer = setTimeout(refreshPreview, 250);
+    }
+    function refreshBatchPreviewDebounced() {
+      clearTimeout(batchPreviewTimer);
+      batchPreviewTimer = setTimeout(refreshBatchPreview, 250);
     }
     async function refreshPreview() {
       try {
@@ -1970,6 +2424,43 @@ INDEX_HTML = r"""<!doctype html>
         if ($("issues")) $("issues").innerHTML = `<div>${err.message}</div>`;
         if ($("startBtn")) $("startBtn").disabled = true;
         toast(err.message || String(err), "bad");
+      }
+    }
+    async function refreshBatchPreview() {
+      try {
+        renderBatchProfileInfo();
+        const data = await api("/api/batch-preview", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(batchPayload())});
+        if ($("batchCommandPreview")) $("batchCommandPreview").textContent = data.command;
+        if ($("batchIssues")) $("batchIssues").innerHTML = data.issues.length ? data.issues.map(x => `<div>${x}</div>`).join("") : `<div style="color:var(--good)">Batch 실행을 막는 설정 문제가 없습니다.</div>`;
+        if ($("batchStartBtn")) $("batchStartBtn").disabled = data.issues.length > 0;
+      } catch (err) {
+        if ($("batchIssues")) $("batchIssues").innerHTML = `<div>${err.message}</div>`;
+        if ($("batchStartBtn")) $("batchStartBtn").disabled = true;
+        toast(err.message || String(err), "bad");
+      }
+    }
+    async function startBatchRun() {
+      const btn = $("batchStartBtn");
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.classList.add("busy");
+      btn.textContent = "Batch 시작 중";
+      try {
+        saveDraft("before_batch_start");
+        toast("Batch 시작 요청을 보냈습니다. Results 탭에서 batch_summary.json과 log를 확인하세요.", "warn");
+        const data = await api("/api/batches", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(batchPayload())});
+        state.selectedRun = data.run_id;
+        toast(`Batch가 시작되었습니다. ${data.run_id}`, "good");
+        switchTab("results");
+        await refreshRuns();
+        pollSelected();
+      } catch (err) {
+        $("batchIssues").innerHTML = `<div>${err.message}</div>`;
+        toast(err.message || String(err), "bad");
+      } finally {
+        btn.classList.remove("busy");
+        btn.textContent = original;
+        btn.disabled = false;
       }
     }
     async function startRun() {
@@ -2026,6 +2517,54 @@ INDEX_HTML = r"""<!doctype html>
       if (typeof value === "number") return Math.abs(value) >= 10 ? value.toFixed(3) : value.toFixed(6);
       return value;
     }
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[ch]));
+    }
+    function formatBytes(value) {
+      const size = Number(value);
+      if (!Number.isFinite(size)) return "-";
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / 1024 / 1024).toFixed(1)} MB`;
+    }
+    function renderArtifacts(data) {
+      const gallery = $("artifactGallery");
+      const links = $("artifactLinks");
+      if (!gallery || !links) return;
+      const artifacts = data?.artifacts || [];
+      const previewable = artifacts.filter(item => ["image", "video", "html"].includes(item.kind));
+      const linked = artifacts.filter(item => !previewable.includes(item));
+      if (!artifacts.length) {
+        gallery.innerHTML = `<div class="notice">아직 표시할 결과 파일이 없습니다. 시각화 이미지는 run이 끝난 뒤 자동으로 나타나고, 영상은 Save video 저장을 켠 run에서 생성됩니다.</div>`;
+        links.innerHTML = "";
+        return;
+      }
+      gallery.innerHTML = previewable.length
+        ? previewable.map(item => {
+            const name = escapeHtml(item.name);
+            const rel = escapeHtml(item.rel_path);
+            const url = item.url;
+            let media = "";
+            if (item.kind === "image") {
+              media = `<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${name}" loading="lazy"></a>`;
+            } else if (item.kind === "video") {
+              media = `<video src="${url}" controls preload="metadata"></video>`;
+            } else {
+              media = `<iframe src="${url}" title="${name}" loading="lazy"></iframe>`;
+            }
+            return `<div class="artifact-card">${media}<div class="artifact-title">${name}</div><div class="artifact-meta">${rel} · ${formatBytes(item.size_bytes)}</div></div>`;
+          }).join("")
+        : `<div class="notice">이미지나 영상 미리보기 파일은 아직 없습니다. CSV/JSON/model 파일은 아래 링크에서 열 수 있습니다.</div>`;
+      links.innerHTML = linked.length
+        ? linked.map(item => `<a class="artifact-link" href="${item.url}" target="_blank" rel="noopener">${escapeHtml(item.name)} · ${formatBytes(item.size_bytes)}</a>`).join("")
+        : "";
+    }
     function passLabel(value) {
       if (value === true) return `<span class="pill good">pass</span>`;
       if (value === false) return `<span class="pill bad">fail</span>`;
@@ -2080,16 +2619,58 @@ INDEX_HTML = r"""<!doctype html>
         <div class="notice" style="margin-top:10px;">complete는 subprocess가 끝까지 실행됐다는 뜻이고, pass/fail은 학습 목표 기준입니다. smoke run은 짧아서 overall_pass=false여도 환경/API 검증 목적상 정상일 수 있습니다.</div>
       `;
     }
+    function renderBatchRun(data) {
+      const batchSummary = data.batch_summary || {};
+      const criteria = batchSummary.batch_final_goal_criteria || {};
+      const gate = $("gate");
+      const metrics = $("metrics");
+      gate.innerHTML = "";
+      metrics.innerHTML = "";
+      for (const [key, value] of Object.entries(criteria)) {
+        if (Array.isArray(value) || typeof value === "object") continue;
+        const span = document.createElement("span");
+        span.className = "pill " + (value === true ? "good" : value === false ? "bad" : "");
+        span.textContent = `${key}: ${value}`;
+        gate.appendChild(span);
+      }
+      metrics.innerHTML = [
+        metricCard("Kind", "batch"),
+        metricCard("Profile", batchSummary.profile),
+        metricCard("Status", statusLabel(data.status)),
+        metricCard("Planned runs", batchSummary.planned_runs),
+        metricCard("Completed runs", batchSummary.completed_runs),
+        metricCard("Failed runs", batchSummary.failed_runs),
+        metricCard("Reused runs", batchSummary.reused_runs),
+        metricCard("Final pass rate", batchSummary.final_goal_pass_rate),
+        metricCard("Expected matrix", criteria.expected_runs),
+        metricCard("Observed matrix", criteria.observed_runs),
+        metricCard("Batch final goal", criteria.batch_final_goal_pass),
+      ].join("");
+      const missing = criteria.missing_runs || [];
+      const robustness = criteria.robustness_failures || [];
+      const failedRuns = criteria.failed_final_goal_runs || [];
+      $("criteriaEval").innerHTML = `
+        <div class="notice">
+          batch_summary.json 기준입니다. missing_runs=${missing.length}, failed_final_goal_runs=${failedRuns.length}, robustness_failures=${robustness.length}.
+          전체 완료와 최종 통과는 batch_final_goal_criteria.batch_final_goal_pass를 봅니다.
+        </div>
+      `;
+    }
     function renderRun(data) {
       state.selectedRunData = data;
       $("selectedLog").textContent = data.log_tail || "";
       $("liveLog").textContent = data.log_tail || "";
       updateGlobalStatus(data);
+      renderArtifacts(data);
       const summary = data.summary;
       const gate = $("gate");
       const metrics = $("metrics");
       gate.innerHTML = "";
       metrics.innerHTML = "";
+      if (data.batch_summary) {
+        renderBatchRun(data);
+        return;
+      }
       renderCriteriaEval(summary);
       if (!summary) {
         gate.innerHTML = `<span class="pill ${data.status === "running" ? "good" : ""}">${statusLabel(data.status)}</span>`;
@@ -2107,20 +2688,48 @@ INDEX_HTML = r"""<!doctype html>
         span.textContent = `${key}: ${value}`;
         gate.appendChild(span);
       }
+      const finalCriteria = summary.final_goal_criteria || {};
+      if (Object.keys(finalCriteria).length) {
+        const finalPass = finalCriteria.final_goal_pass === true;
+        const failedCount = Object.entries(finalCriteria).filter(([key, value]) => key !== "final_goal_pass" && value !== true).length;
+        const span = document.createElement("span");
+        span.className = "pill " + (finalPass ? "good" : "bad");
+        span.textContent = `final_goal_pass: ${finalPass} · failed ${failedCount}`;
+        gate.appendChild(span);
+      }
       const rows = summary.metrics || [];
       const trained = rows.find(row => row.tag === "phaseB_trained") || {};
       metrics.innerHTML = [
         metricCard("Status", statusLabel(data.status)),
         metricCard("Quality score", data.quality_score),
+        metricCard("Final goal", finalCriteria.final_goal_pass ?? "-"),
         metricCard("Paint coverage", trained.painted_pixel_coverage),
         metricCard("Paint precision", trained.painted_pixel_precision),
+        metricCard("Paint recall", trained.painted_pixel_recall),
         metricCard("Paint IoU", trained.painted_pixel_iou),
         metricCard("Paint Dice/F1", trained.painted_pixel_dice),
         metricCard("Off-target ratio", trained.off_target_pixel_ratio),
+        metricCard("Path RMSE m", trained.path_rmse_m),
+        metricCard("Path max m", trained.path_max_m),
         metricCard("Tracking RMSE m", trained.tracking_rmse_m),
         metricCard("Corner path RMSE m", trained.corner_path_rmse_m),
+        metricCard("Corner overshoot m", trained.corner_overshoot_m),
         metricCard("Straight path RMSE m", trained.straight_path_rmse_m),
         metricCard("Corner speed ratio", trained.corner_speed_ratio),
+        metricCard("Corner/straight speed", trained.corner_speed_vs_straight_ratio),
+        metricCard("LED precision", trained.led_precision),
+        metricCard("LED recall", trained.led_recall),
+        metricCard("LED flicker rate", trained.led_flicker_rate),
+        metricCard("RPM saturation", trained.rpm_saturation_ratio),
+        metricCard("Out of bounds rate", trained.out_of_bounds_rate),
+        metricCard("Action norm mean", trained.action_norm_mean),
+        metricCard("Action norm max", trained.action_norm_max),
+        metricCard("Action rate mean", trained.action_rate_mean),
+        metricCard("Action rate max", trained.action_rate_max),
+        metricCard("Path reward", trained.mean_r_path),
+        metricCard("Schedule reward", trained.mean_r_schedule),
+        metricCard("Action magnitude reward", trained.mean_r_action_mag),
+        metricCard("Action rate reward", trained.mean_r_action_rate),
         metricCard("Painting 결과 reward", trained.mean_r_paint_outcome),
         metricCard("One-sided LED miss prior", trained.mean_r_led_prior),
         metricCard("LED flicker reward", trained.mean_r_led_flicker),
@@ -2145,7 +2754,7 @@ INDEX_HTML = r"""<!doctype html>
       state.pollTimer = setInterval(load, 1500);
     }
     function exportPreset() {
-      const blob = new Blob([JSON.stringify(payload(), null, 2)], {type:"application/json"});
+      const blob = new Blob([JSON.stringify({...payload(), batch: collectBatch()}, null, 2)], {type:"application/json"});
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = "lightpaint_dashboard_preset.json";
@@ -2166,6 +2775,8 @@ INDEX_HTML = r"""<!doctype html>
     async function init() {
       const options = await api("/api/options");
       state.defaults = options.defaults;
+      state.batchDefaults = options.batch_defaults;
+      state.batchProfiles = options.batch_profiles;
       state.rewardDefaults = options.reward_defaults;
       state.rewardFields = options.reward_fields;
       state.experimentStages = options.experiment_stages || [];
@@ -2186,6 +2797,8 @@ INDEX_HTML = r"""<!doctype html>
       document.querySelectorAll(".tab").forEach(btn => btn.addEventListener("click", () => switchTab(btn.dataset.tab)));
       document.querySelectorAll("input, select").forEach(el => el.addEventListener("input", () => {
         refreshPreviewDebounced();
+        if (batchKeys.includes(el.id) || el.id.startsWith("reward_")) refreshBatchPreviewDebounced();
+        if (el.id === "batch_profile") renderBatchProfileInfo();
         scheduleAutosave();
       }));
       $("presetSmoke").addEventListener("click", () => applyPreset("smoke"));
@@ -2235,6 +2848,11 @@ INDEX_HTML = r"""<!doctype html>
       $("exportPreset").addEventListener("click", exportPreset);
       $("importPreset").addEventListener("change", e => e.target.files[0] && importPreset(e.target.files[0]));
       $("previewBtn").addEventListener("click", e => withButtonFeedback(e.currentTarget, "갱신 중", "명령을 갱신했습니다.", refreshPreview));
+      $("batchPreviewBtn").addEventListener("click", e => withButtonFeedback(e.currentTarget, "갱신 중", "Batch 명령을 갱신했습니다.", refreshBatchPreview));
+      $("applyBatchLetters").addEventListener("click", () => applyBatchPreset("letters", false, "letter_batch_standard"));
+      $("applyBatchStandard").addEventListener("click", () => applyBatchPreset("standard", false, "final_goal_batch_standard"));
+      $("applyBatchFinalPlan").addEventListener("click", () => applyBatchPreset("final", true, "final_goal_batch_final"));
+      $("batchStartBtn").addEventListener("click", startBatchRun);
       $("startBtn").addEventListener("click", startRun);
       $("copyCommand").addEventListener("click", e => withButtonFeedback(e.currentTarget, "복사 중", "명령을 클립보드에 복사했습니다.", async () => navigator.clipboard.writeText($("commandPreview").textContent)));
       $("refreshRuns").addEventListener("click", e => withButtonFeedback(e.currentTarget, "조회 중", "Run 목록을 새로고침했습니다.", refreshRuns));
@@ -2247,6 +2865,7 @@ INDEX_HTML = r"""<!doctype html>
         await pollSelected();
       });
       await refreshPreview();
+      await refreshBatchPreview();
       await refreshRuns();
       if (state.selectedRun) pollSelected();
       else updateGlobalStatus(null);

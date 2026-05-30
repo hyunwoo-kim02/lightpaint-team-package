@@ -15,6 +15,7 @@ from typing import Any, Iterable, List, Tuple
 import numpy as np
 
 DEFAULT_CORNER_MIN_SHARPNESS = 0.15
+DEFAULT_CORNER_HINT_MIN_SHARPNESS = 0.12
 DEFAULT_CORNER_MIN_SPACING_M = 0.36
 DEFAULT_EFFECTIVE_CORNER_MAX_COUNT = 8
 DEFAULT_CORNER_MASK_MAX_FRACTION = 0.18
@@ -30,6 +31,7 @@ class LightPaintRef:
     name: str = "waypoint_ref"
     plane: str = "xz"
     segment_led: np.ndarray | None = None
+    corner_distance_hints: np.ndarray | None = None
     cumlen: np.ndarray = field(init=False)
     segment_lengths: np.ndarray = field(init=False)
     duration: float = field(init=False)
@@ -75,6 +77,20 @@ class LightPaintRef:
         duration = length / float(self.speed)
         waypoint_times = (cum / float(self.speed)).astype(np.float32)
         corner_indices, corner_sharpness = _detect_corner_indices(pts, cum)
+        if self.corner_distance_hints is not None:
+            hinted_indices = _corner_indices_from_distance_hints(pts, cum, self.corner_distance_hints)
+            if hinted_indices.size:
+                corner_indices = hinted_indices
+                corner_sharpness = np.asarray(
+                    [
+                        max(
+                            _corner_sharpness_at(pts, int(idx)),
+                            DEFAULT_CORNER_HINT_MIN_SHARPNESS,
+                        )
+                        for idx in corner_indices
+                    ],
+                    dtype=np.float32,
+                )
 
         object.__setattr__(self, "waypoints", pts)
         object.__setattr__(self, "segment_led", seg_led)
@@ -194,6 +210,35 @@ def _detect_corner_indices(
         np.asarray([idx for idx, _ in kept], dtype=np.int32),
         np.asarray([sharpness for _, sharpness in kept], dtype=np.float32),
     )
+
+
+def _corner_indices_from_distance_hints(
+    pts: np.ndarray,
+    cumlen: np.ndarray,
+    corner_distances: np.ndarray,
+) -> np.ndarray:
+    """Map raw-source corner arc lengths onto this reference's waypoint indices."""
+    pts = np.asarray(pts, dtype=np.float32)
+    cumlen = np.asarray(cumlen, dtype=np.float32)
+    hints = np.asarray(corner_distances, dtype=np.float32).reshape(-1)
+    if len(pts) < 3 or cumlen.size < 3 or hints.size == 0:
+        return np.zeros(0, dtype=np.int32)
+    length = float(cumlen[-1])
+    kept: list[int] = []
+    for raw_s in hints:
+        s = float(np.clip(float(raw_s), 0.0, length))
+        if s <= 1e-6 or s >= length - 1e-6:
+            continue
+        right = int(np.searchsorted(cumlen, s, side="left"))
+        candidates = [
+            int(np.clip(right - 1, 1, len(pts) - 2)),
+            int(np.clip(right, 1, len(pts) - 2)),
+        ]
+        idx = min(candidates, key=lambda cand: abs(float(cumlen[cand]) - s))
+        if idx not in kept:
+            kept.append(idx)
+    kept.sort()
+    return np.asarray(kept, dtype=np.int32)
 
 
 def effective_corner_indices(
@@ -472,6 +517,7 @@ def make_drawn_path_ref(
     smooth_window_m: float = 0.06,
     connect_strokes: bool = True,
     name: str = "drawn_path",
+    corner_distance_hints: Iterable[float] | None = None,
 ) -> LightPaintRef:
     """Build a continuous flight reference from user-drawn strokes.
 
@@ -556,6 +602,9 @@ def make_drawn_path_ref(
         name=str(name),
         plane=plane,
         segment_led=np.asarray(segment_led, dtype=np.float32),
+        corner_distance_hints=(
+            None if corner_distance_hints is None else np.asarray(list(corner_distance_hints), dtype=np.float32)
+        ),
     )
 
 
@@ -584,6 +633,7 @@ def load_drawn_path_ref(
         raise ValueError("drawn path scale은 0보다 커야 합니다")
     base_width_m = float(width_m if width_m is not None else data.get("width_m", 0.9))
     base_height_m = float(height_m if height_m is not None else data.get("height_m", 0.9))
+    corner_distance_hints = data.get("corner_distance_hints_m", data.get("corner_distances_m"))
     return make_drawn_path_ref(
         strokes=strokes,
         plane=str(plane or data.get("plane", "xz")),
@@ -610,27 +660,102 @@ def load_drawn_path_ref(
         ),
         connect_strokes=bool(data.get("connect_strokes", True)),
         name=str(data.get("name", json_path.stem)),
+        corner_distance_hints=corner_distance_hints,
     )
 
 
-def _walk_mask_pixels(binary: np.ndarray, max_waypoints: int = 160) -> List[Tuple[int, int]]:
-    """Return ordered skeleton pixels as (col, row) pairs."""
+def _thin_binary_zhang_suen(binary: np.ndarray) -> np.ndarray:
+    """Return a one-pixel skeleton without requiring scikit-image."""
+    img = np.pad((np.asarray(binary) > 0).astype(np.uint8), 1)
+    height, width = img.shape
+    changed = True
+    while changed:
+        changed = False
+        for step in (0, 1):
+            delete: list[tuple[int, int]] = []
+            for row in range(1, height - 1):
+                for col in range(1, width - 1):
+                    if img[row, col] == 0:
+                        continue
+                    p2 = img[row - 1, col]
+                    p3 = img[row - 1, col + 1]
+                    p4 = img[row, col + 1]
+                    p5 = img[row + 1, col + 1]
+                    p6 = img[row + 1, col]
+                    p7 = img[row + 1, col - 1]
+                    p8 = img[row, col - 1]
+                    p9 = img[row - 1, col - 1]
+                    neighbors = [p2, p3, p4, p5, p6, p7, p8, p9]
+                    neighbor_count = sum(int(v) for v in neighbors)
+                    transitions = sum(
+                        1
+                        for left, right in zip(neighbors, neighbors[1:] + neighbors[:1])
+                        if left == 0 and right == 1
+                    )
+                    if step == 0:
+                        keep_shape = p2 * p4 * p6 == 0 and p4 * p6 * p8 == 0
+                    else:
+                        keep_shape = p2 * p4 * p8 == 0 and p2 * p6 * p8 == 0
+                    if 2 <= neighbor_count <= 6 and transitions == 1 and keep_shape:
+                        delete.append((row, col))
+            if delete:
+                changed = True
+                for row, col in delete:
+                    img[row, col] = 0
+    return img[1:-1, 1:-1].astype(np.uint8)
+
+
+def _label_binary_components(binary: np.ndarray) -> tuple[np.ndarray, int]:
+    binary = (np.asarray(binary) > 0).astype(np.uint8)
+    labels = np.zeros(binary.shape, dtype=np.int32)
+    component_id = 0
+    height, width = binary.shape
+    rows, cols = np.where(binary > 0)
+    for row, col in zip(rows, cols):
+        row_i = int(row)
+        col_i = int(col)
+        if labels[row_i, col_i] != 0:
+            continue
+        component_id += 1
+        labels[row_i, col_i] = component_id
+        stack = [(row_i, col_i)]
+        while stack:
+            cur_row, cur_col = stack.pop()
+            for drow in (-1, 0, 1):
+                for dcol in (-1, 0, 1):
+                    if drow == 0 and dcol == 0:
+                        continue
+                    next_row = cur_row + drow
+                    next_col = cur_col + dcol
+                    if not (0 <= next_row < height and 0 <= next_col < width):
+                        continue
+                    if binary[next_row, next_col] == 0 or labels[next_row, next_col] != 0:
+                        continue
+                    labels[next_row, next_col] = component_id
+                    stack.append((next_row, next_col))
+    return labels, component_id
+
+
+def _walk_mask_components(binary: np.ndarray, max_waypoints: int = 160) -> List[List[Tuple[int, int]]]:
+    """Return ordered skeleton components as (col, row) pixel paths."""
     binary = (np.asarray(binary) > 0.5).astype(np.uint8)
     if binary.sum() == 0:
         return []
     try:
         from skimage.morphology import skeletonize
-        from skimage.measure import label as cc_label
 
         skel = skeletonize(binary, method="lee").astype(np.uint8)
-        if skel.sum() == 0:
-            skel = binary
+    except Exception:
+        skel = _thin_binary_zhang_suen(binary)
+    if skel.sum() == 0:
+        skel = binary
+    try:
+        from skimage.measure import label as cc_label
+
         labels = cc_label(skel, connectivity=2)
         num_components = int(labels.max())
     except Exception:
-        skel = binary
-        labels = (binary > 0).astype(np.int32)
-        num_components = 1
+        labels, num_components = _label_binary_components(skel)
 
     if num_components <= 0:
         labels = (skel > 0).astype(np.int32)
@@ -646,17 +771,47 @@ def _walk_mask_pixels(binary: np.ndarray, max_waypoints: int = 160) -> List[Tupl
     else:
         ordered_ids = [1]
 
-    out: List[Tuple[int, int]] = []
+    components: List[List[Tuple[int, int]]] = []
     for cid in ordered_ids:
         if num_components > 1:
             rows, cols = np.where(labels == cid)
         else:
             rows, cols = np.where(skel > 0)
-        out.extend(_walk_component_pixels(cols, rows))
+        walked = _walk_component_pixels(cols, rows)
+        if walked:
+            components.append(walked)
 
-    if len(out) > max_waypoints:
-        idx = np.linspace(0, len(out) - 1, int(max_waypoints), dtype=int)
-        out = [out[i] for i in idx]
+    total = sum(len(component) for component in components)
+    if total > int(max_waypoints) and components:
+        budget = max(int(max_waypoints), len(components))
+        lengths = np.asarray([len(component) for component in components], dtype=np.float32)
+        raw_counts = lengths / max(float(lengths.sum()), 1.0) * float(budget)
+        counts = np.maximum(1, np.floor(raw_counts).astype(np.int32))
+        while int(counts.sum()) > budget:
+            candidates = np.where(counts > 1)[0]
+            if candidates.size == 0:
+                break
+            idx = int(candidates[np.argmax(counts[candidates])])
+            counts[idx] -= 1
+        while int(counts.sum()) < budget:
+            idx = int(np.argmax(raw_counts - counts))
+            counts[idx] += 1
+        limited: List[List[Tuple[int, int]]] = []
+        for component, count in zip(components, counts):
+            if len(component) > int(count):
+                idx = np.linspace(0, len(component) - 1, int(count), dtype=int)
+                limited.append([component[i] for i in idx])
+            else:
+                limited.append(component)
+        components = limited
+    return components
+
+
+def _walk_mask_pixels(binary: np.ndarray, max_waypoints: int = 160) -> List[Tuple[int, int]]:
+    """Return ordered skeleton pixels as (col, row) pairs."""
+    out: List[Tuple[int, int]] = []
+    for component in _walk_mask_components(binary, max_waypoints=max_waypoints):
+        out.extend(component)
     return out
 
 
@@ -733,41 +888,107 @@ def make_letter_ref(
     from src.env.letter_masks import render_letter
 
     label = str(letter)
-    mask = render_letter(label.upper(), size=size)
+    mask = render_letter(label, size=size)
     raw_max_waypoints = max(int(max_waypoints) * 3, int(max_waypoints))
-    pixels = _walk_mask_pixels(mask, max_waypoints=raw_max_waypoints)
-    if len(pixels) < 2:
-        pixels = [(size // 2, size // 2), (size // 2 + 1, size // 2)]
+    components = _walk_mask_components(mask, max_waypoints=raw_max_waypoints)
+    if not components:
+        components = [[(size // 2, size // 2), (size // 2 + 1, size // 2)]]
 
     half_w = float(width_m) / 2.0
     half_h = float(height_m) / 2.0
-    pts = []
-    for col, row in pixels:
+    total_pixels = max(sum(len(component) for component in components), 1)
+    component_budgets = [
+        max(2, int(round(float(max_waypoints) * len(component) / float(total_pixels))))
+        for component in components
+    ]
+    while sum(component_budgets) > int(max_waypoints) and any(count > 2 for count in component_budgets):
+        idx = max(range(len(component_budgets)), key=lambda i: component_budgets[i])
+        component_budgets[idx] -= 1
+
+    all_points: List[np.ndarray] = []
+    segment_led: List[float] = []
+    corner_hint_values: List[float] = []
+    raw_length_offset = 0.0
+    last_raw_point: np.ndarray | None = None
+
+    def pixel_to_point(col: int, row: int) -> List[float]:
         u = float(col) / float(size - 1)
         v = float(row) / float(size - 1)
         x = float(center_x) - half_w + u * float(width_m)
         vertical = half_h - v * float(height_m)
         if plane == "xz":
-            pts.append([x, float(fixed_y), float(center_z) + vertical])
-        else:
-            pts.append([x, float(center_y) + vertical, float(fixed_z)])
+            return [x, float(fixed_y), float(center_z) + vertical]
+        return [x, float(center_y) + vertical, float(fixed_z)]
 
-    pts_arr = np.asarray(pts, dtype=np.float32)
-    if smooth:
-        pts_arr = smooth_waypoint_path(
+    for component, budget in zip(components, component_budgets):
+        pts_arr = np.asarray([pixel_to_point(col, row) for col, row in component], dtype=np.float32)
+        pts_arr = _dedupe_waypoints(pts_arr)
+        if len(pts_arr) < 2:
+            continue
+        if last_raw_point is not None:
+            connector_dist = float(np.linalg.norm(pts_arr[0] - last_raw_point))
+            if connector_dist > 1e-6:
+                raw_length_offset += connector_dist
+        raw_seg = np.linalg.norm(np.diff(pts_arr, axis=0), axis=1).astype(np.float32)
+        raw_cum = np.concatenate([[0.0], np.cumsum(raw_seg)]).astype(np.float32)
+        raw_corner_indices, _ = _detect_corner_indices(
             pts_arr,
-            max_waypoints=int(max_waypoints),
-            smooth_window_m=float(smooth_window_m),
-            samples_per_meter=float(samples_per_meter),
+            raw_cum,
+            min_sharpness=DEFAULT_CORNER_HINT_MIN_SHARPNESS,
         )
-    elif len(pts_arr) > int(max_waypoints):
-        idx = np.linspace(0, len(pts_arr) - 1, int(max_waypoints), dtype=int)
-        pts_arr = pts_arr[idx]
+        if raw_corner_indices.size:
+            corner_hint_values.extend((raw_length_offset + raw_cum[raw_corner_indices]).astype(np.float32).tolist())
+        raw_length_offset += float(raw_cum[-1])
+        last_raw_point = pts_arr[-1].copy()
 
+        if smooth:
+            pts_arr = smooth_waypoint_path(
+                pts_arr,
+                max_waypoints=int(budget),
+                smooth_window_m=float(smooth_window_m),
+                samples_per_meter=float(samples_per_meter),
+            )
+        elif len(pts_arr) > int(budget):
+            idx = np.linspace(0, len(pts_arr) - 1, int(budget), dtype=int)
+            pts_arr = pts_arr[idx]
+        if len(pts_arr) < 2:
+            continue
+
+        if not all_points:
+            all_points.extend([p.copy() for p in pts_arr])
+            segment_led.extend([1.0] * (len(pts_arr) - 1))
+            continue
+
+        prev = all_points[-1]
+        first = pts_arr[0]
+        dist = float(np.linalg.norm(first - prev))
+        if dist > 1e-6:
+            all_points.append(first.copy())
+            segment_led.append(0.0)
+            start_idx = 1
+        else:
+            start_idx = 1
+        for p in pts_arr[start_idx:]:
+            all_points.append(p.copy())
+            segment_led.append(1.0)
+
+    if len(all_points) < 2:
+        all_points = [
+            np.asarray(pixel_to_point(size // 2, size // 2), dtype=np.float32),
+            np.asarray(pixel_to_point(size // 2 + 1, size // 2), dtype=np.float32),
+        ]
+        segment_led = [1.0]
+
+    pts_arr = np.asarray(all_points, dtype=np.float32)
+    corner_distance_hints = (
+        np.asarray(corner_hint_values, dtype=np.float32) if corner_hint_values else None
+    )
     return LightPaintRef(
         waypoints=pts_arr,
         speed=float(speed),
         yaw_value=0.0,
-        name=f"letter_{label.upper()}_{plane}_{'smooth' if smooth else 'raw'}",
+        name=f"letter_{label}_{plane}_{'smooth' if smooth else 'raw'}",
         plane=plane,
+        segment_led=np.asarray(segment_led, dtype=np.float32),
+        corner_distance_hints=corner_distance_hints,
     )

@@ -66,6 +66,8 @@ def save_phase_a_visualization(
     snapshots: Optional[list] = None,
     phase_prefix: str = "phase_a",
     phase_display_name: str = "Phase A",
+    reference_speed_mps: Optional[float] = None,
+    ctrl_dt_s: Optional[float] = None,
 ) -> dict:
     """
     Save the Phase A visualization family (consistent naming). The optional
@@ -329,6 +331,8 @@ def save_phase_a_visualization(
                 wind_mode=wind_mode,
                 out_path=refpath_path,
                 phase_display_name=phase_display_name,
+                reference_speed_mps=reference_speed_mps,
+                ctrl_dt_s=ctrl_dt_s,
             )
             print(f"{log_prefix} refpath figure 저장 위치: {refpath_path}", flush=True)
         except Exception as e_ref:
@@ -486,6 +490,8 @@ def save_reference_path_diagnostic(
     wind_mode: str,
     out_path: Path,
     phase_display_name: str = "Phase A",
+    reference_speed_mps: Optional[float] = None,
+    ctrl_dt_s: Optional[float] = None,
 ) -> None:
     """
     Diagnostic figure showing how the reference path was constructed and
@@ -579,15 +585,17 @@ def save_reference_path_diagnostic(
     ax.set_facecolor("#111111")
     n_steps = len(pos_list)
     steps = np.arange(n_steps)
-    s_target = steps * DT * V_REF  # what env feeds to interpolate_traj
+    ref_speed = float(reference_speed_mps) if reference_speed_mps is not None else float(V_REF)
+    ctrl_dt = float(ctrl_dt_s) if ctrl_dt_s is not None else float(DT)
+    s_target = steps * ctrl_dt * ref_speed
     total_len = float(ref_cumlen[-1])
     s_target_clamped = np.minimum(s_target, total_len)
     ax.plot(steps, s_target_clamped, color="orange", linewidth=1.0,
-            label=f"s = step·DT·V_REF (V_REF={V_REF} m/s)")
+            label=f"s = step*dt*speed (speed={ref_speed:.3f} m/s)")
     ax.axhline(total_len, color="red", linestyle="--", linewidth=0.7,
                label=f"total length = {total_len:.3f} m")
     # Mark when reference clamps at endpoint
-    clamp_step = int(np.ceil(total_len / (DT * V_REF)))
+    clamp_step = int(np.ceil(total_len / max(ctrl_dt * ref_speed, 1e-9)))
     if 0 < clamp_step < n_steps:
         ax.axvline(clamp_step, color="cyan", linestyle=":", linewidth=0.6,
                    label=f"clamp @ step {clamp_step}")

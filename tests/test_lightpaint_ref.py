@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+import builtins
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from src.env.lightpaint_ref import (
     make_letter_ref,
     make_square_ref,
 )
+import src.env.lightpaint_ref as lightpaint_ref
 
 
 def test_square_ref_contract_and_geometry():
@@ -85,6 +87,54 @@ def test_letter_ref_supports_xz_and_xy_planes():
     np.testing.assert_allclose(ref_xz.waypoints[:, 1], np.zeros(len(ref_xz.waypoints)), atol=1e-6)
 
 
+def test_letter_ref_preserves_case():
+    mixed = make_letter_ref("Pig", plane="xz", speed=0.3, max_waypoints=120)
+    upper = make_letter_ref("PIG", plane="xz", speed=0.3, max_waypoints=120)
+
+    assert mixed.name == "letter_Pig_xz_smooth"
+    assert upper.name == "letter_PIG_xz_smooth"
+    if mixed.waypoints.shape == upper.waypoints.shape:
+        assert not np.allclose(mixed.waypoints, upper.waypoints)
+    else:
+        assert mixed.waypoints.shape != upper.waypoints.shape
+
+
+def test_multichar_letter_ref_adds_led_off_connectors():
+    for label in ("DG", "CAT", "Pig", "RL"):
+        ref = make_letter_ref(label, plane="xz", speed=0.3, max_waypoints=240)
+        off_indices = np.where(ref.segment_led == 0.0)[0]
+
+        assert off_indices.size >= 1, label
+        for off_idx in off_indices:
+            t_mid_connector = float((ref.cumlen[off_idx] + ref.cumlen[off_idx + 1]) / (2.0 * ref.speed))
+            assert float(ref.led(t_mid_connector)) == 0.0
+
+
+def test_letter_mask_walk_thins_without_skimage(monkeypatch):
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if str(name).startswith("skimage"):
+            raise ImportError("blocked skimage for fallback test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    binary = np.zeros((16, 16), dtype=np.float32)
+    binary[3:13, 5:11] = 1.0
+
+    components = lightpaint_ref._walk_mask_components(binary, max_waypoints=100)
+    total_walked = sum(len(component) for component in components)
+
+    assert components
+    assert total_walked < int(binary.sum())
+
+
+def test_single_component_letter_ref_keeps_led_on():
+    ref = make_letter_ref("L", plane="xz", speed=0.3, max_waypoints=120)
+
+    assert np.all(ref.segment_led == 1.0)
+
+
 def test_drawn_path_ref_adds_led_off_connectors():
     ref = make_drawn_path_ref(
         strokes=[
@@ -145,6 +195,27 @@ def test_load_drawn_path_ref_from_json(tmp_path):
     assert ref.plane == "xz"
     assert ref.duration > 0.0
     assert np.all(ref.segment_led == 1.0)
+
+
+def test_load_drawn_path_ref_applies_manual_corner_hints(tmp_path):
+    path = tmp_path / "drawn_corners.json"
+    path.write_text(
+        json.dumps({
+            "name": "drawn_corners",
+            "coordinate_space": "world",
+            "plane": "xz",
+            "smooth": False,
+            "corner_distance_hints_m": [0.4],
+            "strokes": [
+                {"points": [[0.0, 1.0], [0.4, 1.0], [0.4, 1.4]], "led": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    ref = load_drawn_path_ref(path, speed=0.25, smooth=False)
+
+    np.testing.assert_allclose(ref.cumlen[ref.corner_indices], [0.4], atol=1e-6)
 
 
 def test_load_drawn_path_ref_applies_json_path_scale(tmp_path):
