@@ -365,6 +365,29 @@ def test_dg_reference_led_catchup_is_limited_to_positive_xy_disturbance():
         env.close()
 
 
+def test_dg_m0_reference_led_tail_catchup_finishes_endpoint():
+    ref = make_letter_ref("DG", plane="xz", speed=0.35)
+    env = LightPaintAviaryPyB(
+        label="DG",
+        phase="B",
+        wind_mode="M0",
+        reference=ref,
+        max_episode_steps=5,
+        init_box_size=0.0,
+    )
+    try:
+        tail_point = np.asarray(ref.pos(max(float(ref.duration) - 0.05, 0.0)), dtype=np.float32)
+        after_schedule = float(ref.duration + 0.5)
+        assert ref.led(after_schedule) == pytest.approx(0.0)
+        assert env._progress_led_gate(tail_point) == pytest.approx(1.0)
+        assert env._scripted_led_ref(tail_point, after_schedule) == pytest.approx(1.0)
+
+        env._stamp_led_progress(tail_point, 1.0)
+        assert env._scripted_led_ref(tail_point, after_schedule) == pytest.approx(0.0)
+    finally:
+        env.close()
+
+
 def test_square_reference_led_gate_allows_limited_progress_catchup():
     ref = make_square_ref(side_m=0.8, speed=0.35)
     env = LightPaintAviaryPyB(

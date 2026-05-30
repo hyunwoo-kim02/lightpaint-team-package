@@ -105,6 +105,7 @@ Y_CANVAS = 0.0
 LED_STAMP_RADIUS_PX = 1
 LED_STAMP_MIN_TARGET_FRACTION = 7.0 / 9.0
 LED_PROGRESS_GATE_MAX_OFF_TARGET_RATIO = 0.115
+LED_END_CATCHUP_WINDOW_M = 0.12
 
 MAX_EPISODE_STEPS_DEFAULT = 2000
 
@@ -918,6 +919,26 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 return True
         return ref_name == "square" or "LETTER_RL" in ref_key or "LETTER_L" in ref_key
 
+    def _use_reference_end_led_catchup(self, pos: np.ndarray, t_led: float) -> bool:
+        if self.reference is None:
+            return False
+        if float(t_led) < float(self.reference.duration):
+            return False
+        segment_led = np.asarray(getattr(self.reference, "segment_led", []), dtype=np.float32).reshape(-1)
+        if segment_led.size > 0 and float(segment_led[-1]) <= 0.5:
+            return False
+        path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
+        if not math.isfinite(path_dist) or len(self._ref_cumlen) < 2:
+            return False
+        cum = np.asarray(self._ref_cumlen, dtype=np.float32)
+        idx = int(np.clip(segment_idx, 0, len(cum) - 2))
+        seg_len = float(cum[idx + 1] - cum[idx])
+        s_now = float(cum[idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
+        remaining = float(cum[-1] - s_now)
+        if remaining > LED_END_CATCHUP_WINDOW_M:
+            return False
+        return True
+
     def _progress_led_gate_max_off_target_ratio(self) -> float:
         ref_name = self.reference.name if self.reference is not None else self.label
         if ref_name == "square":
@@ -1038,7 +1059,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 footprint_gate = 1.0
                 if self._use_stamp_footprint_led_gate():
                     footprint_gate = 1.0 if self._target_stamp_fraction(pos) >= LED_STAMP_MIN_TARGET_FRACTION else 0.0
-                if self._use_progress_led_catchup():
+                if self._use_progress_led_catchup() or self._use_reference_end_led_catchup(pos, t_led):
                     base = min(scheduled, mask_gate, footprint_gate)
                     return max(base, self._progress_led_gate(pos))
                 return min(scheduled, mask_gate, footprint_gate)
