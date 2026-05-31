@@ -16,6 +16,32 @@ artifacts/pytest-tmp/
 # Generated experiment and visualization artifacts
 artifacts/*
 !artifacts/README.md
+teams/
+*_auto.png
+local_archive/
+
+# Keep only the canonical DG reference and one user-drawn path in Git.
+data/corner_hints/*.json
+!data/corner_hints/DG_reference.json
+data/drawn_paths/examples/
+data/drawn_paths/generated/
+data/drawn_paths/user/*.json
+!data/drawn_paths/user/user_drawn_path.json
+
+# Local notes and generated reports kept outside the submission package.
+docs/
+reports/
+models/
+tests/
+
+# Keep only maintained user-facing tools in Git.
+tools/*
+!tools/
+!tools/run_dashboard.bat
+!tools/run_dashboard.ps1
+!tools/draw_path.html
+!tools/corner_hint_editor.html
+!tools/export_corner_reference.py
 
 # Trained model binaries; use Git LFS or DVC if these must be versioned.
 models/*.zip

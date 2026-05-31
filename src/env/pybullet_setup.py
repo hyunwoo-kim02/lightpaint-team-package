@@ -1,6 +1,5 @@
 """
-pybullet_setup.py — PYBULLET-PATH-FIX-1 module.
-Plan reference: joyful-painting-leaf.md CP-2 (D7/D11).
+pybullet_setup.py - PyBullet path compatibility helpers.
 
 Korean characters in the project path break PyBullet's URDF importer because
 `pkg_resources.resource_filename` returns a path that PyBullet later
@@ -8,10 +7,6 @@ re-encodes through code that assumes ASCII. We mirror pybullet_data + the
 gym-pybullet-drones assets directory into an ASCII path under %TEMP%, then
 monkey-patch `pybullet_data.getDataPath` and `pkg_resources.resource_filename`
 to redirect non-ASCII paths to that mirror.
-
-Pattern transcribed from:
-  mini_script/teams/integration/code/render_pybullet_snapshots.py:19-51
-  lightpaint-team-package/reference/env_sanity_v4.py:26-59
 
 Call apply_korean_path_fix() ONCE at module import time of any file that
 imports gym_pybullet_drones. Idempotent: subsequent calls are no-ops.

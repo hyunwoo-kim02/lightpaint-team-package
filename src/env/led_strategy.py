@@ -1,11 +1,10 @@
 """
 led_strategy.py — LED on/off (or brightness) decision strategies.
-Plan reference: joyful-painting-leaf.md §"신규 — led_strategy.py".
 
 Phase scope:
-- ScriptedLED: functional (Phase A/B) — looks up target_mask at the drone's
+- ScriptedLED: functional (Phase A/B) - looks up target_mask at the drone's
   current pixel and emits brightness 1.0 if on-target, else 0.0.
-- LearnedDiscreteLED / LearnedContinuousLED: skeleton with NotImplementedError.
+- LearnedDiscreteLED / LearnedContinuousLED: reserved command interfaces.
 """
 from __future__ import annotations
 
@@ -15,8 +14,8 @@ from typing import Optional
 import numpy as np
 
 
-# Re-import the world_to_pixel function locally to avoid a circular dependency
-# with light_paint_aviary_w1.py. Constants are duplicated here from SRS §4.6.
+# Re-import the world_to_pixel function locally to avoid a circular dependency.
+# These bounds match the XZ canvas used by the light-painting environments.
 _X_MIN, _X_MAX = -1.0, 1.0
 _Z_MIN, _Z_MAX = 0.5, 2.5
 
@@ -54,7 +53,7 @@ class ScriptedLED(LEDStrategy):
 
 
 class LearnedDiscreteLED(LEDStrategy):
-    """[next plan] action[0] > 0 → ON, else OFF."""
+    """Discrete LED command interface: action[0] > 0 means ON, else OFF."""
 
     def decide(
         self,
@@ -63,12 +62,12 @@ class LearnedDiscreteLED(LEDStrategy):
         target_mask: np.ndarray,
     ) -> float:
         raise NotImplementedError(
-            "LearnedDiscreteLED is scheduled for Phase C; only ScriptedLED is wired in Checkpoint 1."
+            "LearnedDiscreteLED is not wired into the active environment."
         )
 
 
 class LearnedContinuousLED(LEDStrategy):
-    """[next plan] brightness = clip(action[0], 0, 1)."""
+    """Continuous LED command interface: brightness = clip(action[0], 0, 1)."""
 
     def decide(
         self,
@@ -77,7 +76,7 @@ class LearnedContinuousLED(LEDStrategy):
         target_mask: np.ndarray,
     ) -> float:
         raise NotImplementedError(
-            "LearnedContinuousLED is scheduled for Phase C; only ScriptedLED is wired in Checkpoint 1."
+            "LearnedContinuousLED is not wired into the active environment."
         )
 
 

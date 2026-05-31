@@ -1,6 +1,5 @@
 """
 pybullet_snapshot.py — External-camera snapshot for PyBullet DIRECT-mode runs.
-Plan reference: joyful-painting-leaf.md CP-2 (D8).
 
 Transcribes mini_script/teams/integration/code/render_pybullet_snapshots.py:75-94
 with the same view/proj defaults so the camera framing matches the published

@@ -77,8 +77,8 @@ REWARD_FIELDS: tuple[dict[str, Any], ...] = (
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "run_name": "",
-    "trajectory": "square",
-    "label": "L",
+    "trajectory": "letter",
+    "label": "DG",
     "square_side": 0.8,
     "letter_plane": "xz",
     "drawn_path": "data/drawn_paths/user/user_drawn_path.json",
@@ -129,8 +129,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 DEFAULT_BATCH_CONFIG: dict[str, Any] = {
-    "batch_run_name": "final_goal_batch_standard",
-    "batch_profile": "standard",
+    "batch_run_name": "dual_path_final_plan",
+    "batch_profile": "final",
     "batch_dry_run": True,
     "batch_resume": True,
     "batch_continue_on_error": True,
@@ -594,7 +594,7 @@ def _build_batch_command(config: dict[str, Any], output_dir: Path) -> list[str]:
         "-m",
         "src.train.run_final_goal_batch",
         "--profile",
-        str(config.get("batch_profile") or "standard"),
+        str(config.get("batch_profile") or "final"),
         "--output-dir",
         str(output_dir),
     ]
@@ -818,7 +818,7 @@ def _preview_batch(payload: dict[str, Any]) -> dict[str, Any]:
     run_title = _safe_slug(str(config.get("batch_run_name") or "final_goal_batch"))
     preview_dir = _RUNS_ROOT / f"{_now_token()}_{run_title}"
     command = _build_batch_command(config, preview_dir)
-    profile = str(config.get("batch_profile") or "standard")
+    profile = str(config.get("batch_profile") or "final")
     defaults = final_batch.PROFILE_DEFAULTS[profile]
     return {
         "issues": issues,
@@ -1721,7 +1721,7 @@ INDEX_HTML = r"""<!doctype html>
               <code>overall_pass=false</code>여도 실패로 보지 않습니다.
             </div>
             <div style="margin-top:12px" class="notice">
-              권장 흐름: smoke 확인 -> 단일 M0 sanity -> 전체 Batch letters 장시간 학습 -> standard 전체 matrix -> final 최종 평가.
+              권장 흐름: smoke 확인 -> DG/user drawn batch 계획 확인 -> dual-path final 평가.
             </div>
           </div>
           <div class="panel span-12">
@@ -1811,9 +1811,9 @@ INDEX_HTML = r"""<!doctype html>
         <div class="toolbar">
           <h2>전체 Batch 실행</h2>
           <div class="toolbar-actions">
-            <button class="btn secondary" id="applyBatchLetters">letters 장시간 학습 적용</button>
-            <button class="btn secondary" id="applyBatchStandard">standard 전체 학습 적용</button>
-            <button class="btn secondary" id="applyBatchFinalPlan">final 최종 계획 적용</button>
+            <button class="btn secondary" id="applyBatchLetters">DG batch 적용</button>
+            <button class="btn secondary" id="applyBatchStandard">DG+drawn batch 적용</button>
+            <button class="btn secondary" id="applyBatchFinalPlan">dual-path final 계획 적용</button>
             <button class="btn secondary" id="batchPreviewBtn">Batch 명령 갱신</button>
             <button class="btn" id="batchStartBtn">Batch 시작</button>
           </div>
@@ -1822,8 +1822,8 @@ INDEX_HTML = r"""<!doctype html>
           <div class="panel span-5">
             <h3>Batch profile</h3>
             <div class="notice" style="margin-bottom:10px;">
-              최종 목표 검증은 단일 run이 아니라 여러 글자, 외란, seed를 모두 포함한 batch로 판단합니다.
-              <code>letters</code>는 짧은 smoke가 아니라 L/DG/CAT/Pig/RL 전체를 장시간 학습 대상으로 실행합니다.
+              최종 목표 검증은 단일 run이 아니라 retained path, 외란, seed를 모두 포함한 batch로 판단합니다.
+              <code>letters</code>는 DG만 실행하고, <code>standard</code>/<code>final</code>은 DG와 user drawn path만 실행합니다.
               기본값은 안전하게 dry-run 계획 확인으로 시작합니다.
             </div>
             <div class="field-grid">
@@ -1971,7 +1971,7 @@ INDEX_HTML = r"""<!doctype html>
       run_name: "대시보드와 artifacts 폴더에 기록될 실험 이름입니다. 비워두면 trajectory와 wind mode를 기준으로 자동 생성됩니다.",
       trajectory: "reference 경로 종류입니다. square는 생성 사각형, letter는 글자 이미지 기반 경로, drawn은 tools/draw_path.html에서 만든 JSON 경로입니다.",
       wind_mode: "외란 조건입니다. M0는 외란 없음, M1/M2는 PyBullet applyExternalForce 기반 외란을 적용하는 강건성 실험입니다.",
-      label: "trajectory가 letter일 때 렌더링할 글자 또는 문자열입니다. 예: L, DG, CAT.",
+      label: "trajectory가 letter일 때 렌더링할 글자입니다. 현재 기본 목표는 DG입니다.",
       square_side: "trajectory가 square일 때 한 변의 길이입니다. 추천값: 기본 0.8m. path_scale이 있으면 최종 길이에 함께 반영됩니다.",
       letter_plane: "letter reference를 어느 평면에 배치할지 정합니다. xz는 앞에서 보는 글자 평면, xy는 수평 평면입니다.",
       drawn_path: "trajectory가 drawn일 때 사용할 JSON 파일 경로입니다. 상대 경로는 lightpaint-team-package 기준입니다.",
@@ -1979,9 +1979,9 @@ INDEX_HTML = r"""<!doctype html>
       speed: "reference가 진행되는 기준 속도입니다. 추천값: 0.30~0.35 m/s, 기본 0.35. Phase B는 이 속도 벡터에 residual velocity를 더해 PID target velocity를 만듭니다.",
       width_m: "letter/drawn reference의 목표 너비입니다. 추천값: 비워두고 시작, 필요하면 0.7~1.0m 범위에서 조정. square에는 적용되지 않습니다.",
       height_m: "letter/drawn reference의 목표 높이입니다. 추천값: 비워두고 시작, 글자가 너무 작거나 크면 0.5~0.9m 범위에서 조정. square에는 적용되지 않습니다.",
-      max_waypoints: "letter/drawn 경로의 waypoint 수 상한입니다. 추천값: 보통 비움. 복잡한 CAT/DG가 너무 오래 걸리면 120~250 정도로 제한합니다.",
+      max_waypoints: "letter/drawn 경로의 waypoint 수 상한입니다. 추천값: 보통 비움. DG가 너무 오래 걸리면 120~250 정도로 제한합니다.",
       seed: "환경 reset, 정책 초기화, BC sample 순서 등에 쓰이는 난수 seed입니다. 추천값: 비교 실험은 7로 고정, 후보가 좋아지면 3~5개 seed로 재확인하세요.",
-      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 sanity 2048~8192, 단일 full 후보 10만부터 시작, M2/최종 후보는 20만~30만 이상을 사용합니다. 여러 글자 전체 평가는 run_final_goal_batch profile letters/standard/final을 사용하세요.",
+      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 sanity 2048~8192, 단일 full 후보 10만부터 시작, M2/최종 후보는 20만~30만 이상을 사용합니다. DG/user drawn 평가는 run_final_goal_batch profile letters/standard/final을 사용하세요.",
       max_steps: "episode당 최대 step 수입니다. 추천값: 학습/평가는 비워서 자동 계산. smoke는 2~90, square 전체 평가는 대략 350~400입니다.",
       settle_time: "reference가 끝난 뒤 마지막 목표 주변에서 더 실행할 시간입니다. 추천값: 2.0s, 최종 영상/평가는 2~3s. max_steps를 비우면 자동 horizon 계산에 반영됩니다.",
       ctrl_freq: "환경 step/control frequency입니다. 추천값: 30Hz. PyBullet physics frequency보다 낮거나 같아야 합니다.",
@@ -2011,14 +2011,14 @@ INDEX_HTML = r"""<!doctype html>
       bc_batch_size: "BC optimizer minibatch 크기입니다. 추천값: 64. dataset이 작으면 32도 가능합니다.",
       bc_learning_rate: "BC optimizer learning rate입니다. 추천값: 1e-3. loss가 흔들리면 3e-4로 낮춥니다.",
       bc_nonzero_weight: "teacher action이 0이 아닌 corner 감속 sample에 주는 추가 가중치입니다. 추천값: 1.0, corner sample이 묻히면 2~4.",
-      trained_action_filter: "평가 때 trained action을 그대로 쓸지, corner tangent 감속 성분만 남길지 정합니다. 추천값: 최종/공유 평가는 corner_tangent_decel, raw policy ablation은 none.",
-      batch_profile: "전체 batch 범위입니다. letters는 L/DG/CAT/Pig/RL 전체 글자, standard는 square/letters/drawn, final은 5 seeds 장기 평가입니다.",
+      trained_action_filter: "평가 때 trained action을 그대로 쓸지, corner tangent 감속 성분만 남길지 정합니다. 추천값: 최종/공유 평가는 corner_tangent_decel, 후처리 없는 확인은 none.",
+      batch_profile: "전체 batch 범위입니다. letters는 DG만, standard/final은 DG와 user drawn path만 사용합니다. 다른 경로는 필요할 때 명시적으로 생성해서 실행합니다.",
       batch_dry_run: "체크하면 실제 학습을 시작하지 않고 실행 계획과 명령만 생성합니다. 공유 전에는 먼저 켜고 계획을 확인하세요.",
       batch_resume: "체크하면 이미 summary.json이 있는 run은 재사용합니다. 장시간 batch가 중간에 끊겨도 이어서 돌릴 때 필요합니다.",
       batch_continue_on_error: "체크하면 한 run이 실패해도 다음 trajectory/wind/seed로 넘어갑니다. 최종 batch_summary에서 실패 run을 확인합니다.",
       batch_eval_only: "체크하면 학습 없이 model manifest에 적힌 기존 PPO 모델들을 전체 matrix에서 평가만 합니다. 최종 목표 달성 주장은 이 모드의 final profile 결과로 확인하는 것이 가장 깔끔합니다.",
       batch_model_manifest: "eval-only batch에서 사용할 best_model_manifest.json 경로입니다. 이전 batch 학습 산출물의 best_model_manifest.json을 넣습니다.",
-      batch_trained_action_filter: "batch 평가에서 trained rollout action을 후처리할지 정합니다. 추천값은 corner_tangent_decel이며, raw policy 비교 실험만 none을 사용합니다.",
+      batch_trained_action_filter: "batch 평가에서 trained rollout action을 후처리할지 정합니다. 추천값은 corner_tangent_decel이며, 후처리 없는 확인에만 none을 사용합니다.",
       batch_teacher_window_m: "batch 실행 시 teacher/action filter가 corner 전후 몇 m 구간을 볼지 정합니다. 현재 검증 기준 추천값은 0.15m입니다.",
     };
     const configKeys = [
@@ -2274,7 +2274,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderBatchProfileInfo() {
       const host = $("batchProfileInfo");
       if (!host) return;
-      const profile = getInput("batch_profile") || "standard";
+      const profile = getInput("batch_profile") || "final";
       const data = state.batchProfiles[profile] || {};
       const trajectories = data.trajectories || "-";
       const winds = data.wind_modes || "-";
@@ -2315,8 +2315,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     function setPresetValues(name) {
       if (name === "smoke") {
-        setInput("run_name", "smoke_m0");
-        setInput("trajectory", "square");
+        setInput("run_name", "smoke_dg_m0");
+        setInput("trajectory", "letter");
+        setInput("label", "DG");
         setInput("wind_mode", "M0");
         setInput("max_steps", 3);
         setInput("total_timesteps", 0);
@@ -2327,8 +2328,9 @@ INDEX_HTML = r"""<!doctype html>
         setInput("save_video", false);
       }
       if (name === "short") {
-        setInput("run_name", "short_square_m0");
-        setInput("trajectory", "square");
+        setInput("run_name", "short_dg_m0");
+        setInput("trajectory", "letter");
+        setInput("label", "DG");
         setInput("wind_mode", "M0");
         setInput("max_steps", "");
         setInput("total_timesteps", 2048);
@@ -2339,9 +2341,9 @@ INDEX_HTML = r"""<!doctype html>
         setInput("gui", false);
       }
       if (name === "robust") {
-        setInput("run_name", "robust_letter_m2");
+        setInput("run_name", "robust_dg_m2");
         setInput("trajectory", "letter");
-        setInput("label", "L");
+        setInput("label", "DG");
         setInput("wind_mode", "M2");
         setInput("max_steps", "");
         setInput("total_timesteps", 100000);
@@ -2849,9 +2851,9 @@ INDEX_HTML = r"""<!doctype html>
       $("importPreset").addEventListener("change", e => e.target.files[0] && importPreset(e.target.files[0]));
       $("previewBtn").addEventListener("click", e => withButtonFeedback(e.currentTarget, "갱신 중", "명령을 갱신했습니다.", refreshPreview));
       $("batchPreviewBtn").addEventListener("click", e => withButtonFeedback(e.currentTarget, "갱신 중", "Batch 명령을 갱신했습니다.", refreshBatchPreview));
-      $("applyBatchLetters").addEventListener("click", () => applyBatchPreset("letters", false, "letter_batch_standard"));
-      $("applyBatchStandard").addEventListener("click", () => applyBatchPreset("standard", false, "final_goal_batch_standard"));
-      $("applyBatchFinalPlan").addEventListener("click", () => applyBatchPreset("final", true, "final_goal_batch_final"));
+      $("applyBatchLetters").addEventListener("click", () => applyBatchPreset("letters", false, "dg_batch_standard"));
+      $("applyBatchStandard").addEventListener("click", () => applyBatchPreset("standard", false, "dual_path_batch_standard"));
+      $("applyBatchFinalPlan").addEventListener("click", () => applyBatchPreset("final", true, "dual_path_batch_final"));
       $("batchStartBtn").addEventListener("click", startBatchRun);
       $("startBtn").addEventListener("click", startRun);
       $("copyCommand").addEventListener("click", e => withButtonFeedback(e.currentTarget, "복사 중", "명령을 클립보드에 복사했습니다.", async () => navigator.clipboard.writeText($("commandPreview").textContent)));

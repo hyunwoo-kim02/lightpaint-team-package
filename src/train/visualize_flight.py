@@ -1,16 +1,7 @@
 """
-visualize_flight.py — Mandatory drone-flight visualization for Week 1.
+visualize_flight.py - Drone-flight visualization utilities.
 Purpose: Load trained policy, run 1 deterministic episode, save 3D flight PNG,
          per-frame snapshots, and mp4 to artifacts/visualization/.
-SRS reference: SRS_v2.2 §8, system-spec.md AC-5 (EV-8).
-Kit reuse: 3D matplotlib flight plot + frame writer + mp4 mux from
-           led-feasibility/code/integrated_gif_l4_v2.py (transcribed, not imported).
-
-Global feedback mandate (feedback_drone_flight_visualization.md):
-    Every real flight in Phase 2/3 MUST save:
-      - 3D PNG to artifacts/visualization/rl_lp_w1_flight_3d.png
-      - Frame snapshots to artifacts/visualization/frames/frame_NNN.png
-      - mp4 to artifacts/visualization/rl_lp_w1_flight.mp4
 
 CLI:
     python -m src.train.visualize_flight --model models/rl_lp_w1.zip --letter L
@@ -45,8 +36,17 @@ def _lazy_import_ppo():
     return PPO
 
 
+_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
+
+
+def _normalize_wind_arg(wind: str) -> str:
+    """Normalize legacy W0-W2 CLI aliases to current M0-M2 wind mode names."""
+    wind_key = str(wind).upper()
+    return _LEGACY_WIND_TO_MODE.get(wind_key, wind_key)
+
+
 # ----------------------------------------------------------------------
-# Phase A visualization (added Checkpoint 1 — no SB3 dependency).
+# Phase A visualization without an SB3 dependency.
 # ----------------------------------------------------------------------
 
 def save_phase_a_visualization(
@@ -617,11 +617,7 @@ def save_reference_path_diagnostic(
     plt.close(fig)
 
 
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.monitor import Monitor
-
 from src.env.lightpaint_geometry import X_MIN, X_MAX, Z_MIN, Z_MAX, world_to_pixel, LED_STAMP_RADIUS_PX
-from src.env.light_paint_aviary_standalone import LightPaintAviaryW1
 
 # Maximum steps per eval episode
 MAX_EVAL_STEPS = 600
@@ -704,7 +700,6 @@ def save_3d_flight_png(
     """
     Save 3D matplotlib flight trajectory PNG.
 
-    Mandatory artifact per feedback_drone_flight_visualization.md.
     Colored by LED state: red = LED ON, cyan = LED OFF.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -900,7 +895,8 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
 def main(args: argparse.Namespace) -> None:
     """Main visualization entry point."""
     letter = args.letter.upper()
-    wind = args.wind.upper()
+    wind_mode = _normalize_wind_arg(args.wind)
+    wind = wind_mode
     model_path = Path(args.model)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -919,9 +915,13 @@ def main(args: argparse.Namespace) -> None:
     print(f"[viz] 모델을 불러옵니다: {model_path}", flush=True)
     print(f"[viz] 글자={letter}, 외란={wind}", flush=True)
 
+    from stable_baselines3.common.monitor import Monitor
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from src.env.light_paint_aviary_standalone import LightPaintAviaryW1
+
     # Build single-env DummyVecEnv (NOT SubprocVecEnv for eval)
     def _make_eval_env() -> Monitor:
-        env = LightPaintAviaryW1(letter=letter, wind=wind, gui=False,
+        env = LightPaintAviaryW1(letter=letter, wind_mode=wind_mode, gui=False,
                                   init_box_size=0.0, led_always_on=False)
         return Monitor(env)
 
@@ -941,7 +941,7 @@ def main(args: argparse.Namespace) -> None:
           f"LED on {sum(led_list)}/{len(led_list)} steps, "
           f"painted {int(cumulative.sum())}px", flush=True)
 
-    # Save 3D flight PNG (MANDATORY per feedback_drone_flight_visualization.md)
+    # Save 3D flight PNG
     png_3d = out_dir / "rl_lp_w1_flight_3d.png"
     save_3d_flight_png(pos_list, led_list, png_3d, letter)
 
@@ -974,8 +974,8 @@ def parse_args() -> argparse.Namespace:
                         help="Path to trained PPO model (.zip).")
     parser.add_argument("--letter", default="L",
                         help="Letter to visualize (default: L).")
-    parser.add_argument("--wind", default="W0",
-                        help="Wind level (default: W0).")
+    parser.add_argument("--wind", default="M0",
+                        help="Wind mode M0/M1/M2, or legacy W0/W1/W2 alias (default: M0).")
     parser.add_argument("--out-dir", default=str(_PKG_ROOT / "artifacts" / "visualization"),
                         help="Output directory for visualization artifacts.")
     return parser.parse_args()

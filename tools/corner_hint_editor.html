@@ -248,7 +248,6 @@
     <section class="stack">
       <h2>Reference</h2>
       <button id="loadDefaultDg" class="primary">Load DG Reference</button>
-      <button id="loadImageWaypointDg">Load image_to_waypoints DG</button>
       <label>reference JSON or trajectory CSV
         <input id="refFile" type="file" accept=".json,.csv">
       </label>
@@ -304,7 +303,6 @@
     const output = document.getElementById("output");
     const statusEl = document.getElementById("status");
     const loadDefaultDg = document.getElementById("loadDefaultDg");
-    const loadImageWaypointDg = document.getElementById("loadImageWaypointDg");
     const statePill = document.getElementById("statePill");
     const lengthPill = document.getElementById("lengthPill");
     const cornerPill = document.getElementById("cornerPill");
@@ -412,13 +410,6 @@
 
     function loadDefaultDgReference() {
       return loadReferenceFromUrl("../data/corner_hints/DG_reference.json", "DG reference");
-    }
-
-    function loadImageWaypointDgReference() {
-      return loadReferenceFromUrl(
-        "../data/corner_hints/DG_image_to_waypoints_xz_reference.json",
-        "image_to_waypoints DG"
-      );
     }
 
     function normalizeSegmentLed(values, count) {
@@ -797,7 +788,6 @@
     });
 
     loadDefaultDg.addEventListener("click", loadDefaultDgReference);
-    loadImageWaypointDg.addEventListener("click", loadImageWaypointDgReference);
 
     hintFile.addEventListener("change", async event => {
       const file = event.target.files[0];

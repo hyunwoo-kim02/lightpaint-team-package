@@ -1,6 +1,5 @@
 """
-light_paint_aviary_pyb.py — LightPaintAviaryPyB (Phase A PyBullet).
-Plan reference: joyful-painting-leaf.md CP-2.
+light_paint_aviary_pyb.py - LightPaintAviaryPyB (Phase A PyBullet).
 
 Inherits gym_pybullet_drones BaseRLAviary so PyBullet CF2X dynamics + URDF
 mesh are first-class. PID is `DSLPIDControl.computeControlFromState` (D7);
@@ -10,7 +9,7 @@ wind disturbance is injected via `_physics` override using
 Phase A runs pure PID plus scripted LED. Phase B runs PID target velocity and
 LED command residuals on top of the same baseline.
 
-Composition (engine-agnostic, reused from CP-1):
+Composition:
 - self.wind          : WindMode (M0/M1/M2 active)
 - self.led_strategy  : LEDStrategy (ScriptedLED for A/B)
 - self.G_letter      : binary target mask (case-preserved)
@@ -94,7 +93,7 @@ VEL_NORM = 1.5
 ATT_NORM = math.pi
 ANG_NORM = math.pi
 
-V_REF = 0.5          # m/s reference speed (SRS §5.5)
+V_REF = 0.5          # m/s reference speed
 DT = 1.0 / 30.0      # 30 Hz control frequency (matches BaseRLAviary ctrl_freq)
 N_FUTURE = 15
 
@@ -103,13 +102,12 @@ Z_MIN, Z_MAX = 0.5, 2.5
 Y_CANVAS = 0.0
 
 LED_STAMP_RADIUS_PX = 1
-LED_STAMP_MIN_TARGET_FRACTION = 7.0 / 9.0
+LED_STAMP_MIN_TARGET_FRACTION = 6.0 / 9.0
 LED_PROGRESS_GATE_MAX_OFF_TARGET_RATIO = 0.115
-LED_END_CATCHUP_WINDOW_M = 0.12
 
 MAX_EPISODE_STEPS_DEFAULT = 2000
 
-_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2", "W3": "M3"}
+_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
 
 
 def _env_flag(name: str) -> bool:
@@ -181,10 +179,11 @@ class LightPaintAviaryPyB(BaseRLAviary):
         else:
             self._ref_waypoints = self.reference.waypoints.copy()
             self._ref_cumlen = self.reference.cumlen.copy()
+            include_led_off_segments = _env_flag("LIGHTPAINT_LEGACY_REFERENCE_MASK_CONNECTORS")
             self.G_letter = self._build_reference_mask(
                 self._ref_waypoints,
                 segment_led=self.reference.segment_led,
-                include_led_off_segments=_env_flag("LIGHTPAINT_LEGACY_REFERENCE_MASK_CONNECTORS"),
+                include_led_off_segments=include_led_off_segments,
             )
         self._corner_indices = self._resolve_corner_indices()
         self._corner_sharpness_lookup = self._resolve_corner_sharpness_lookup()
@@ -210,6 +209,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         self._last_led_ref = 0.0
         self._last_delta_led = 0.0
         self._last_brightness = 0.0
+        self._reference_end_led_catchup_was_used = False
         self._last_tracking_err = 0.0
         self._last_out_of_bounds = False
         self._last_path_dist = 0.0
@@ -626,7 +626,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
             delta_led = 0.0
         target_vel = (v_ref + delta_v).astype(np.float32)
 
-        # 2. drone state → DSLPID RPM
+        # 2. drone state -> DSLPID RPM
         state_20 = self._getDroneStateVector(0)
         try:
             rpm, _, _ = self.dsl_pid.computeControlFromState(
@@ -881,127 +881,22 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 target += 1
         return float(target) / float(max(len(cells), 1))
 
+    def _stamp_footprint_led_threshold(self) -> float:
+        return LED_STAMP_MIN_TARGET_FRACTION
+
     def _use_progress_led_gate(self) -> bool:
-        ref_name = self.reference.name if self.reference is not None else self.label
-        return "LETTER_PIG" in str(ref_name).upper()
+        return False
 
     def _use_progress_led_catchup(self) -> bool:
-        ref_name = self.reference.name if self.reference is not None else self.label
-        ref_key = str(ref_name).upper()
-        if "LETTER_DG" in ref_key and self.wind_mode != "M0":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if self.wind_mode == "M2" and reset_seed == 7:
-                return False
-            if self.wind_mode == "M1" and reset_seed == 7:
-                return True
-            if self.wind_mode == "M1" and reset_seed == 23:
-                return True
-            wind_force = np.asarray(self._latched_wind, dtype=np.float32).reshape(-1)
-            return wind_force.size >= 2 and float(wind_force[0]) > 0.0 and float(wind_force[1]) > 0.0
-        if "LETTER_CAT" in ref_key:
-            return True
-        if "DRAWN" in ref_key and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 7:
-                return True
-        if "DRAWN" in ref_key and self.wind_mode == "M1":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed in {7, 29}:
-                return True
-        return ref_name == "square" or "LETTER_RL" in ref_key or "LETTER_L" in ref_key
+        return False
 
     def _use_reference_end_led_catchup(self, pos: np.ndarray, t_led: float) -> bool:
-        if self.reference is None:
-            return False
-        if float(t_led) < float(self.reference.duration):
-            return False
-        segment_led = np.asarray(getattr(self.reference, "segment_led", []), dtype=np.float32).reshape(-1)
-        if segment_led.size > 0 and float(segment_led[-1]) <= 0.5:
-            return False
-        path_dist, segment_idx, alpha = self._nearest_path_stats(pos)
-        if not math.isfinite(path_dist) or len(self._ref_cumlen) < 2:
-            return False
-        cum = np.asarray(self._ref_cumlen, dtype=np.float32)
-        idx = int(np.clip(segment_idx, 0, len(cum) - 2))
-        seg_len = float(cum[idx + 1] - cum[idx])
-        s_now = float(cum[idx]) + float(np.clip(alpha, 0.0, 1.0)) * seg_len
-        remaining = float(cum[-1] - s_now)
-        if remaining > LED_END_CATCHUP_WINDOW_M:
-            return False
-        return True
+        return False
+
+    def _reference_end_led_catchup_gate(self, pos: np.ndarray, t_led: float) -> float:
+        return 0.0
 
     def _progress_led_gate_max_off_target_ratio(self) -> float:
-        ref_name = self.reference.name if self.reference is not None else self.label
-        if ref_name == "square":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if self.wind_mode == "M1" and reset_seed == 29:
-                return 0.115
-            return 0.095
-        if "LETTER_PIG" in str(ref_name).upper():
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if self.wind_mode == "M1" and reset_seed == 7:
-                return 0.10
-            return 0.10
-        if "LETTER_DG" in str(ref_name).upper() and self.wind_mode == "M1":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 7:
-                return 0.10
-            if reset_seed == 23:
-                return 0.10
-        if "LETTER_CAT" in str(ref_name).upper():
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if self.wind_mode == "M0":
-                if reset_seed == 11:
-                    return 0.095
-                return 0.10
-            if reset_seed == 7:
-                return 0.09
-            if reset_seed == 17:
-                return 0.095
-            return 0.10
-        if "LETTER_RL" in str(ref_name).upper() and self.wind_mode == "M1":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 7:
-                return 0.13
-        if "DRAWN" in str(ref_name).upper() and self.wind_mode == "M1":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed in {7, 29}:
-                return 0.08
-        if "LETTER_L" in str(ref_name).upper():
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if self.wind_mode == "M1" and reset_seed == 7:
-                return 0.10
-            return 0.25
         return LED_PROGRESS_GATE_MAX_OFF_TARGET_RATIO
 
     def _progress_led_gate(self, pos: np.ndarray) -> float:
@@ -1021,25 +916,6 @@ class LightPaintAviaryPyB(BaseRLAviary):
 
     def _held_progress_led_gate(self, pos: np.ndarray) -> float:
         gate = self._progress_led_gate(pos)
-        if gate > 0.5:
-            self._progress_led_hold_used = False
-            self._progress_led_gate_was_held = False
-            return gate
-        ref_name = self.reference.name if self.reference is not None else self.label
-        if self.phase == "B" and "LETTER_PIG" in str(ref_name).upper() and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if (
-                reset_seed == 11
-                and self._last_led_ref > 0.5
-                and not self._progress_led_hold_used
-                and self._target_stamp_fraction(pos) > 0.0
-            ):
-                self._progress_led_hold_used = True
-                self._progress_led_gate_was_held = True
-                return 1.0
         self._progress_led_hold_used = False
         self._progress_led_gate_was_held = False
         return gate
@@ -1048,6 +924,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         return True
 
     def _scripted_led_ref(self, pos: np.ndarray, t_led: float) -> float:
+        self._reference_end_led_catchup_was_used = False
         if self.led_always_on:
             return 1.0
         if self.reference is not None:
@@ -1058,61 +935,26 @@ class LightPaintAviaryPyB(BaseRLAviary):
                 mask_gate = float(self.led_strategy.decide(pos, np.zeros(0, dtype=np.float32), self.G_letter))
                 footprint_gate = 1.0
                 if self._use_stamp_footprint_led_gate():
-                    footprint_gate = 1.0 if self._target_stamp_fraction(pos) >= LED_STAMP_MIN_TARGET_FRACTION else 0.0
-                if self._use_progress_led_catchup() or self._use_reference_end_led_catchup(pos, t_led):
+                    threshold = self._stamp_footprint_led_threshold()
+                    footprint_gate = 1.0 if self._target_stamp_fraction(pos) >= threshold else 0.0
+                end_catchup_gate = self._reference_end_led_catchup_gate(pos, t_led)
+                if self._use_progress_led_catchup() or end_catchup_gate > 0.5:
                     base = min(scheduled, mask_gate, footprint_gate)
-                    return max(base, self._progress_led_gate(pos))
+                    value = max(base, self._progress_led_gate(pos), end_catchup_gate)
+                    self._reference_end_led_catchup_was_used = end_catchup_gate > 0.5 and value > 0.5
+                    return value
                 return min(scheduled, mask_gate, footprint_gate)
             return scheduled
         mask_gate = float(self.led_strategy.decide(pos, np.zeros(0, dtype=np.float32), self.G_letter))
         if self.phase in {"A", "B"} and mask_gate > 0.5 and self._use_stamp_footprint_led_gate():
-            if self._target_stamp_fraction(pos) < LED_STAMP_MIN_TARGET_FRACTION:
+            if self._target_stamp_fraction(pos) < self._stamp_footprint_led_threshold():
                 return 0.0
         return mask_gate
 
     def _target_only_led_stamp(self, led_ref: float, delta_led: float) -> bool:
-        ref_name = self.reference.name if self.reference is not None else self.label
-        if self.phase == "B" and "LETTER_PIG" in str(ref_name).upper() and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 11 and self._progress_led_gate_was_held:
-                return True
-        if self.phase == "B" and "LETTER_DG" in str(ref_name).upper() and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 7 and float(led_ref) <= 0.5 and float(delta_led) > 0.0:
-                return True
-        if self.phase == "B" and "LETTER_RL" in str(ref_name).upper() and self.wind_mode == "M1":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed in {7, 23} and float(led_ref) > 0.5:
-                return True
-        if self.phase == "B" and "DRAWN" in str(ref_name).upper() and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 7 and float(led_ref) > 0.5:
-                return True
         return False
 
     def _update_policy_progress_for_led_stamp(self, pos: np.ndarray) -> bool:
-        ref_name = self.reference.name if self.reference is not None else self.label
-        if self.phase == "B" and "LETTER_PIG" in str(ref_name).upper() and self.wind_mode == "M2":
-            try:
-                reset_seed = int(self._last_reset_seed)
-            except (TypeError, ValueError):
-                reset_seed = None
-            if reset_seed == 11:
-                path_dist, _, _ = self._nearest_path_stats(pos)
-                if math.isfinite(path_dist) and path_dist > 0.04:
-                    return False
         return True
 
     def _computeReward(self) -> float:

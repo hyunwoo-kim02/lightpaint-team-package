@@ -1,4 +1,4 @@
-"""Wind disturbance modes for LightPaintAviaryW1.
+"""Wind disturbance modes for LightPaint environments.
 
 Each mode supports:
     reset(rng)        : sample fresh per-episode parameters
@@ -86,24 +86,13 @@ class M2Wind(WindMode):
         return (self.direction * magnitude).astype(np.float32)
 
 
-class M3Wind(WindMode):
-    """Time-varying direction and magnitude OU-process mode."""
-
-    def reset(self, rng: np.random.Generator) -> None:
-        raise NotImplementedError("M3Wind is outside the current minimum disturbance set.")
-
-    def step(self, t: float) -> np.ndarray:
-        raise NotImplementedError("M3Wind is outside the current minimum disturbance set.")
-
-
-_REGISTRY = {"M0": M0Wind, "M1": M1Wind, "M2": M2Wind, "M3": M3Wind}
+_REGISTRY = {"M0": M0Wind, "M1": M1Wind, "M2": M2Wind}
 
 
 def make_wind_mode(name: str, rng: np.random.Generator) -> WindMode:
-    """Construct a WindMode by name and reset implemented modes with the supplied rng."""
+    """Construct a WindMode by name and reset it with the supplied rng."""
     if name not in _REGISTRY:
         raise ValueError(f"Unknown wind mode: {name!r}. Choose from {list(_REGISTRY)}.")
     mode = _REGISTRY[name]()
-    if name in ("M0", "M1", "M2"):
-        mode.reset(rng)
+    mode.reset(rng)
     return mode

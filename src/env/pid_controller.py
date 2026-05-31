@@ -1,6 +1,5 @@
 """
 pid_controller.py — VelocityPID for LightPaintAviaryW1.
-Plan reference: joyful-painting-leaf.md §"신규 — pid_controller.py".
 
 Pure-numpy PD-velocity controller used by Phase A (PID sanity).
 Returns a velocity command in m/s clipped to ±max_vel per axis.

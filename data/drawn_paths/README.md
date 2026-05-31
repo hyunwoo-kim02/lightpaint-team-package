@@ -4,8 +4,10 @@ User-drawn light-painting paths are stored here as JSON stroke files.
 
 Directory layout:
 
-- `user/`: paths drawn by the project user and used for current experiments.
-- `examples/`: small sample paths for smoke tests and documentation.
+- `user/`: the canonical user-drawn path used for current experiments.
+
+Generated or converted reference paths should be regenerated on demand and not
+kept in this directory unless they become a new canonical input.
 
 JSON contract:
 

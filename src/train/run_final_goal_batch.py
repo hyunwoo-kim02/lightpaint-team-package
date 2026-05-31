@@ -26,17 +26,17 @@ from src.train.train_phase_b_m0_corner import _final_goal_criteria as _compute_f
 _HERE = Path(__file__).resolve().parent
 _PKG_ROOT = _HERE.parent.parent
 
-DEFAULT_LETTER_TRAJECTORIES = ("L", "DG", "CAT", "Pig", "RL")
-DEFAULT_TRAJECTORIES = ("square", *DEFAULT_LETTER_TRAJECTORIES, "drawn")
+DEFAULT_LETTER_TRAJECTORIES = ("DG",)
+DEFAULT_TRAJECTORIES = (*DEFAULT_LETTER_TRAJECTORIES, "drawn")
 DEFAULT_WINDS = ("M0", "M1", "M2")
 DEFAULT_SEEDS = (7, 11, 17)
 FINAL_SEEDS = (7, 11, 17, 23, 29)
 CANONICAL_DRAWN_PATH = "data/drawn_paths/user/user_drawn_path.json"
-CANONICAL_DRAWN_SHA256 = "36715a93285c49f264cbd3ec9336825afba48615d125dc24310fa082027a9e2c"
+CANONICAL_DRAWN_SHA256 = "0f02e7c4b875bcc204f053e02fed82f85711ee24c9b559d06da0d5f764e74b98"
 DEFAULT_TRAINED_ACTION_FILTER = "corner_tangent_decel"
 PROFILE_DEFAULTS = {
     "sanity": {
-        "trajectories": "square,L",
+        "trajectories": "DG,drawn",
         "wind_modes": "M0",
         "seeds": "7",
         "total_timesteps": 20_000,
@@ -926,7 +926,7 @@ def run(args: argparse.Namespace) -> int:
     drawn_input = _drawn_input_metadata(args, trajectories)
     manifest: dict[str, Any] = {
         "schema_version": 1,
-        "final_goal_spec": "docs/FINAL_GOAL_SPEC.md",
+        "final_goal_spec": "final_goal_thresholds_v1",
         "profile": str(args.profile),
         "started_at": started_at,
         "dry_run": bool(args.dry_run),
@@ -945,13 +945,13 @@ def run(args: argparse.Namespace) -> int:
         "drawn_input": drawn_input,
         "evaluation_policy": (
             "phaseB_trained rollout applies the selected trained_action_filter; "
-            "set --trained-action-filter none for raw-policy ablations."
+            "set --trained-action-filter none only when an unfiltered rollout is needed."
         ),
         "runs": [],
     }
     best_model_manifest: dict[str, Any] = {
         "schema_version": 2,
-        "final_goal_spec": "docs/FINAL_GOAL_SPEC.md",
+        "final_goal_spec": "final_goal_thresholds_v1",
         "profile": str(args.profile),
         "dry_run": bool(args.dry_run),
         "eval_only": bool(args.eval_only),
@@ -1319,9 +1319,9 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(PROFILE_DEFAULTS),
         default="standard",
         help=(
-            "sanity is only an execution check; letters runs all built-in letters/winds with 3 seeds; "
-            "standard runs all trajectories/winds with 3 seeds; "
-            "final runs the same matrix with 5 seeds and longer training."
+            "sanity is only an execution check; letters runs canonical DG only; "
+            "standard runs canonical DG plus the user drawn path with 3 seeds; "
+            "final runs the same dual-path matrix with 5 seeds and longer training."
         ),
     )
     parser.add_argument("--trajectories", default=None)

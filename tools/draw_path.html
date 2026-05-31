@@ -77,6 +77,24 @@
       grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
+    .section {
+      border: 1px solid #303740;
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+      background: #12171c;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #e6edf5;
+    }
+    .hint {
+      color: #8f9aa6;
+      font-size: 12px;
+      line-height: 1.35;
+    }
     button {
       cursor: pointer;
       background: #202832;
@@ -132,6 +150,65 @@
     <label>
       <span><input id="led" type="checkbox" checked> LED on for next stroke</span>
     </label>
+    <div class="section">
+      <div class="section-title">Clean primitive placement</div>
+      <div class="row">
+        <label>canvas_tool
+          <select id="canvasTool">
+            <option value="place" selected>Place primitive</option>
+            <option value="freehand">Freehand draw</option>
+          </select>
+        </label>
+        <label>primitive
+          <select id="primitive">
+            <option value="ellipse">circle / ellipse</option>
+            <option value="arc">arc</option>
+            <option value="bezier">smooth curve</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>samples
+          <input id="primitiveSamples" type="number" value="96" step="8" min="8" max="512">
+        </label>
+        <label>curve_bend
+          <input id="curveBend" type="number" value="0.15" step="0.02" min="-0.5" max="0.5">
+        </label>
+      </div>
+      <div class="row">
+        <label>center_x
+          <input id="primitiveCx" type="number" value="0.50" step="0.01" min="0" max="1">
+        </label>
+        <label>center_y
+          <input id="primitiveCy" type="number" value="0.50" step="0.01" min="0" max="1">
+        </label>
+      </div>
+      <div class="row">
+        <label>radius_x
+          <input id="primitiveRx" type="number" value="0.20" step="0.01" min="0.01" max="0.5">
+        </label>
+        <label>radius_y
+          <input id="primitiveRy" type="number" value="0.20" step="0.01" min="0.01" max="0.5">
+        </label>
+      </div>
+      <div class="row">
+        <label>start_deg
+          <input id="primitiveStartDeg" type="number" value="0" step="5">
+        </label>
+        <label>end_deg
+          <input id="primitiveEndDeg" type="number" value="360" step="5">
+        </label>
+      </div>
+      <label>bezier_points
+        <input id="bezierPoints" value="0.20,0.70 0.30,0.25 0.70,0.25 0.80,0.70">
+      </label>
+      <div class="buttons">
+        <button id="addPrimitive" class="primary" type="button">Add Primitive</button>
+        <button id="reversePrimitive" type="button">Reverse Angles</button>
+      </div>
+      <div class="hint">Values are normalized canvas coordinates. Circle/arc use center and radii; smooth curve uses four Bezier control points.</div>
+      <div class="hint">Place primitive mode: drag on the canvas to set position and size, then press Add Primitive. Hold Shift while dragging an ellipse/arc to keep it circular.</div>
+    </div>
     <div class="buttons">
       <button id="undo" type="button">Undo</button>
       <button id="clear" type="button">Clear</button>
@@ -146,14 +223,30 @@
     const ctx = canvas.getContext("2d");
     const strokes = [];
     let current = null;
+    let preview = null;
+    let placementDrag = null;
+    let lastPlacement = null;
+
+    function clamp01(value) {
+      return Math.max(0, Math.min(1, Number(value)));
+    }
+
+    function numeric(id, fallback) {
+      const value = Number(document.getElementById(id).value);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function setNumeric(id, value, digits = 3) {
+      document.getElementById(id).value = Number(value).toFixed(digits);
+    }
 
     function pointFromEvent(event) {
       const rect = canvas.getBoundingClientRect();
       const x = (event.clientX - rect.left) / rect.width;
       const y = (event.clientY - rect.top) / rect.height;
       return [
-        Math.max(0, Math.min(1, x)),
-        Math.max(0, Math.min(1, y))
+        clamp01(x),
+        clamp01(y)
       ];
     }
 
@@ -191,10 +284,173 @@
       ctx.stroke();
     }
 
+    function drawPreview(points) {
+      if (!points || points.length < 2) return;
+      ctx.strokeStyle = "#f6d365";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 8]);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((pt, idx) => {
+        const x = pt[0] * canvas.width;
+        const y = pt[1] * canvas.height;
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     function redraw() {
       drawGrid();
       strokes.forEach(s => drawStroke(s, false));
       if (current) drawStroke(current, true);
+      drawPreview(preview);
+    }
+
+    function sampleEllipse({ cx, cy, rx, ry, startDeg, endDeg, samples }) {
+      const points = [];
+      const start = startDeg * Math.PI / 180;
+      const end = endDeg * Math.PI / 180;
+      const n = Math.max(8, Math.min(512, Math.round(samples)));
+      for (let i = 0; i <= n; i += 1) {
+        const t = i / n;
+        const a = start + (end - start) * t;
+        points.push([
+          clamp01(cx + Math.cos(a) * rx),
+          clamp01(cy + Math.sin(a) * ry)
+        ]);
+      }
+      return points;
+    }
+
+    function parseBezierPoints() {
+      const raw = document.getElementById("bezierPoints").value.trim();
+      const matches = raw.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
+      const nums = matches.map(Number).filter(Number.isFinite);
+      if (nums.length !== 8) return null;
+      return [
+        [clamp01(nums[0]), clamp01(nums[1])],
+        [clamp01(nums[2]), clamp01(nums[3])],
+        [clamp01(nums[4]), clamp01(nums[5])],
+        [clamp01(nums[6]), clamp01(nums[7])]
+      ];
+    }
+
+    function sampleBezier(points, samples) {
+      const out = [];
+      const n = Math.max(8, Math.min(512, Math.round(samples)));
+      for (let i = 0; i <= n; i += 1) {
+        const t = i / n;
+        const u = 1 - t;
+        const b0 = u * u * u;
+        const b1 = 3 * u * u * t;
+        const b2 = 3 * u * t * t;
+        const b3 = t * t * t;
+        out.push([
+          clamp01(b0 * points[0][0] + b1 * points[1][0] + b2 * points[2][0] + b3 * points[3][0]),
+          clamp01(b0 * points[0][1] + b1 * points[1][1] + b2 * points[2][1] + b3 * points[3][1])
+        ]);
+      }
+      return out;
+    }
+
+    function buildPrimitivePoints() {
+      const kind = document.getElementById("primitive").value;
+      const samples = numeric("primitiveSamples", 96);
+      if (kind === "bezier") {
+        const points = parseBezierPoints();
+        return points ? sampleBezier(points, samples) : [];
+      }
+      const cx = clamp01(numeric("primitiveCx", 0.5));
+      const cy = clamp01(numeric("primitiveCy", 0.5));
+      const rx = Math.max(0.01, Math.min(0.5, numeric("primitiveRx", 0.2)));
+      const ry = Math.max(0.01, Math.min(0.5, numeric("primitiveRy", 0.2)));
+      const startDeg = kind === "ellipse" ? 0 : numeric("primitiveStartDeg", 0);
+      const endDeg = kind === "ellipse" ? 360 : numeric("primitiveEndDeg", 360);
+      return sampleEllipse({ cx, cy, rx, ry, startDeg, endDeg, samples });
+    }
+
+    function refreshPreview() {
+      preview = buildPrimitivePoints();
+      redraw();
+    }
+
+    function updatePrimitiveFromDrag(start, end, event) {
+      const shiftKey = Boolean(event && event.shiftKey);
+      lastPlacement = {
+        start: [...start],
+        end: [...end],
+        shiftKey
+      };
+      const kind = document.getElementById("primitive").value;
+      if (kind === "bezier") {
+        const dx = end[0] - start[0];
+        const dy = end[1] - start[1];
+        const len = Math.max(Math.hypot(dx, dy), 1e-6);
+        const bend = Math.max(-0.5, Math.min(0.5, numeric("curveBend", 0.15)));
+        const nx = -dy / len;
+        const ny = dx / len;
+        const p0 = start;
+        const p3 = end;
+        const p1 = [
+          clamp01(start[0] + dx / 3 + nx * bend),
+          clamp01(start[1] + dy / 3 + ny * bend)
+        ];
+        const p2 = [
+          clamp01(start[0] + dx * 2 / 3 + nx * bend),
+          clamp01(start[1] + dy * 2 / 3 + ny * bend)
+        ];
+        document.getElementById("bezierPoints").value = [p0, p1, p2, p3]
+          .map(pt => `${pt[0].toFixed(3)},${pt[1].toFixed(3)}`)
+          .join(" ");
+        refreshPreview();
+        return;
+      }
+
+      const cx = (start[0] + end[0]) / 2;
+      const cy = (start[1] + end[1]) / 2;
+      let rx = Math.abs(end[0] - start[0]) / 2;
+      let ry = Math.abs(end[1] - start[1]) / 2;
+      if (shiftKey) {
+        const r = Math.max(rx, ry);
+        rx = r;
+        ry = r;
+      }
+      setNumeric("primitiveCx", clamp01(cx));
+      setNumeric("primitiveCy", clamp01(cy));
+      setNumeric("primitiveRx", Math.max(0.01, Math.min(0.5, rx)));
+      setNumeric("primitiveRy", Math.max(0.01, Math.min(0.5, ry)));
+      refreshPreview();
+    }
+
+    function canvasTool() {
+      return document.getElementById("canvasTool").value;
+    }
+
+    function refreshAfterControlChange(event) {
+      const id = event && event.target ? event.target.id : "";
+      const kind = document.getElementById("primitive").value;
+      let placement = lastPlacement;
+      if (!placement && id === "curveBend" && kind === "bezier") {
+        const points = parseBezierPoints();
+        if (points) {
+          placement = {
+            start: points[0],
+            end: points[3],
+            shiftKey: false
+          };
+        }
+      }
+      const shouldRecomputeFromDrag = placement
+        && canvasTool() === "place"
+        && ["curveBend", "primitive", "canvasTool"].includes(id);
+      if (shouldRecomputeFromDrag) {
+        updatePrimitiveFromDrag(placement.start, placement.end, { shiftKey: placement.shiftKey });
+      } else {
+        refreshPreview();
+      }
     }
 
     function buildJson() {
@@ -221,14 +477,27 @@
 
     canvas.addEventListener("pointerdown", event => {
       canvas.setPointerCapture(event.pointerId);
+      const pt = pointFromEvent(event);
+      if (canvasTool() === "place") {
+        placementDrag = { start: pt, end: pt };
+        updatePrimitiveFromDrag(pt, pt, event);
+        document.getElementById("status").textContent = "Drag to size the primitive preview";
+        return;
+      }
       current = {
         led: document.getElementById("led").checked,
-        points: [pointFromEvent(event)]
+        points: [pt]
       };
       redraw();
     });
 
     canvas.addEventListener("pointermove", event => {
+      if (placementDrag) {
+        const pt = pointFromEvent(event);
+        placementDrag.end = pt;
+        updatePrimitiveFromDrag(placementDrag.start, pt, event);
+        return;
+      }
       if (!current) return;
       const pt = pointFromEvent(event);
       const last = current.points[current.points.length - 1];
@@ -241,6 +510,12 @@
     });
 
     function finishStroke() {
+      if (placementDrag) {
+        placementDrag = null;
+        document.getElementById("status").textContent = "Preview set. Press Add Primitive to commit";
+        redraw();
+        return;
+      }
       if (current && current.points.length >= 2) strokes.push(current);
       current = null;
       redraw();
@@ -257,6 +532,7 @@
     document.getElementById("clear").addEventListener("click", () => {
       strokes.length = 0;
       current = null;
+      lastPlacement = null;
       redraw();
       exportJson();
     });
@@ -270,8 +546,46 @@
       a.click();
       URL.revokeObjectURL(a.href);
     });
+    document.getElementById("addPrimitive").addEventListener("click", () => {
+      const points = buildPrimitivePoints();
+      if (points.length < 2) {
+        document.getElementById("status").textContent = "Invalid primitive parameters";
+        return;
+      }
+      strokes.push({
+        led: document.getElementById("led").checked,
+        points
+      });
+      lastPlacement = null;
+      refreshPreview();
+      exportJson();
+    });
+    document.getElementById("reversePrimitive").addEventListener("click", () => {
+      const start = document.getElementById("primitiveStartDeg");
+      const end = document.getElementById("primitiveEndDeg");
+      const tmp = start.value;
+      start.value = end.value;
+      end.value = tmp;
+      refreshPreview();
+    });
+    [
+      "primitive",
+      "canvasTool",
+      "primitiveSamples",
+      "primitiveCx",
+      "primitiveCy",
+      "primitiveRx",
+      "primitiveRy",
+      "primitiveStartDeg",
+      "primitiveEndDeg",
+      "curveBend",
+      "bezierPoints"
+    ].forEach(id => {
+      document.getElementById(id).addEventListener("input", refreshAfterControlChange);
+      document.getElementById(id).addEventListener("change", refreshAfterControlChange);
+    });
 
-    redraw();
+    refreshPreview();
     exportJson();
   </script>
 </body>

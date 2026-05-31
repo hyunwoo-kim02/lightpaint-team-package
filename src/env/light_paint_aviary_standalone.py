@@ -7,22 +7,20 @@ require pybullet/gym-pybullet-drones. Production Phase A runs go through
 
 Class name `LightPaintAviaryW1` is preserved so existing tests keep working.
 
-Plan reference: joyful-painting-leaf.md Checkpoint 1.
-
 Phase dispatch:
 - 'A'           : PID-only sanity, action_space = Box(0,0,(0,)), wind_mode='M0' enforced.
 - 'B'           : PID + velocity/LED residual, action_space = Box(-1,1,(4,)).
-- 'C_discrete'  : (next plan) frozen B + Discrete(2) LED.
-- 'C_continuous': (next plan) frozen B + Box(0,1,(1,)) brightness.
+- 'C_discrete'  : frozen B + Discrete(2) LED interface.
+- 'C_continuous': frozen B + Box(0,1,(1,)) brightness interface.
 
 Composition:
 - self.pid          : VelocityPID
-- self.wind         : WindMode (M0/M1/M2/M3)
+- self.wind         : WindMode (M0/M1/M2)
 - self.led_strategy : LEDStrategy (ScriptedLED for A/B; Learned* for C)
 
 Backwards compatibility:
 - `letter=` arg accepted as alias for `label=`.
-- `wind='W0'..'W3'` accepted but mapped to wind_mode='M0'..'M3'.
+- `wind='W0'..'W2'` accepted as deprecated aliases for wind_mode='M0'..'M2'.
 """
 import os
 import sys
@@ -60,26 +58,18 @@ from src.env.reward_config import (
 )
 from src.env.reward_terms import compute_lightpaint_reward, is_led_on, led_brightness_from_ref
 
-# --- SRS §5.1 normalization constants (transcribed from light_paint_aviary_v4.py) ---
+# --- Observation normalization constants ---
 POS_NORM = 1.0   # divide position by 1.0 m
 VEL_NORM = 1.5   # divide velocity by 1.5 m/s
 ATT_NORM = math.pi  # divide attitude (euler) by pi
 ANG_NORM = math.pi  # divide angular velocity by pi
 
-# --- DATT-style future-ref constants (transcribed from v4) ---
-V_REF = 0.5      # m/s reference speed (SRS §5.5)
+# --- Future reference constants ---
+V_REF = 0.5      # m/s reference speed
 DT = 1.0 / 30.0  # 30 Hz control frequency
 N_FUTURE = 15    # future reference points (N_FUTURE × 3 = 45-dim future_ref)
 
-# --- Wind disturbance force grid per SRS §4.4 ---
-WIND_FORCE = {
-    "W0": 0.000,
-    "W1": 0.010,
-    "W2": 0.025,
-    "W3": 0.050,
-}
-
-# --- World bounds for pixel mapping (transcribed from kit world_to_pixel.py) ---
+# --- World bounds for pixel mapping ---
 X_MIN, X_MAX = -1.0, 1.0
 Z_MIN, Z_MAX = 0.5, 2.5
 Y_CANVAS = 0.0   # canvas is in XZ plane at Y=0
@@ -96,11 +86,10 @@ MAX_EPISODE_STEPS = 2000  # default episode horizon (overridable via env init)
 
 # --- Phase B residual scaling ---
 
-# --- Backwards-compat: legacy 'W0'..'W3' wind level → new 'M0'..'M3' wind mode ---
+# Backwards-compat only. Force magnitudes live in src.env.wind_modes.
+_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
 
-_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2", "W3": "M3"}
-
-# --- Reward weights per SRS §5.3.1 ---
+# --- Reward weights ---
 W_LED_ASYM_POS = 1.0   # reward for LED ON + on target pixel
 W_LED_ASYM_NEG = 0.1   # penalty for LED ON + off target pixel
 W_PROGRESS = 2.0       # weight for r_progress (anti-hover, alpha=1.0)
@@ -131,16 +120,16 @@ def pixel_to_world(col: int, row: int, size: int = 64) -> Tuple[float, float]:
 
 class LightPaintAviaryW1(gym.Env):
     """
-    Week 1 LightPaintAviary — single-drone LED light-painting environment.
+    Single-drone LED light-painting environment.
 
     Standalone gymnasium.Env (no pybullet dependency) with simplified
     double-integrator physics for CPU/GPU-agnostic smoke-train on Windows.
 
-    Implements full SRS_v2.2 §4-§5 spec including:
-    - Dict obs (4 keys per §5.1)
-    - 5-dim action (per §5.2)
-    - 5-term reward (per §5.3.1)
-    - Wind W0-W3 disturbance grid (per §4.4)
+    Implements:
+    - Dict observation with drone state, future reference, target mask, and progress mask.
+    - Residual velocity and LED action interface.
+    - Light-painting reward terms.
+    - Wind disturbance modes from src.env.wind_modes (M0/M1/M2)
     - DATT-style 15-point future-ref (per §6.3.1)
     - Letter pool {R, L, T, I} (per §4.7)
     - Progress mask updated per step (per §5.1)
@@ -166,13 +155,13 @@ class LightPaintAviaryW1(gym.Env):
 
         Args:
             label: Text label to paint (e.g. 'L', 'RL', 'Pig'). Case-sensitive.
-            wind_mode: Wind disturbance mode, one of 'M0'..'M3'. Phase A enforces 'M0'.
+            wind_mode: Wind disturbance mode. M0/M1/M2 are active.
             phase: 'A' (PID sanity) | 'B' (wind robust) | 'C_discrete' | 'C_continuous'.
             gui: Ignored.
             init_box_size: Initial position noise box half-size in meters.
-            led_always_on: If True, LED forced ON every step (ablation mode).
+            led_always_on: If True, LED forced ON every step.
             letter: (deprecated) alias for `label`.
-            wind: (deprecated) legacy 'W0'..'W3' string; mapped to wind_mode.
+            wind: (deprecated) legacy 'W0'..'W2' string; mapped to wind_mode.
         """
         super().__init__()
 
@@ -301,7 +290,7 @@ class LightPaintAviaryW1(gym.Env):
         """
         Build an arc-length-parameterized reference trajectory.
 
-        Pipeline (SRS §4.8 inspired):
+        Pipeline:
           1) Skeletonize the filled label mask to get a 1-pixel-wide curve.
           2) Connected-component label the skeleton; sort components by centroid x.
           3) For each component, walk pixels endpoint-to-endpoint (greedy
@@ -515,8 +504,8 @@ class LightPaintAviaryW1(gym.Env):
         """
         Stamp LED paint into cumulative progress_mask weighted by brightness ∈ [0,1].
 
-        Phase A uses brightness ∈ {0.0, 1.0} (binary scripted LED).
-        Phase C_continuous will use float brightness for soft accumulation.
+        Phase A uses brightness in {0.0, 1.0}; residual phases may use
+        continuous brightness for soft accumulation.
         """
         if brightness <= 0.0:
             return
@@ -759,7 +748,7 @@ class LightPaintAviaryW1(gym.Env):
             return (arr[0:3] * RESIDUAL_DELTA_MAX).astype(np.float32)
         if self.phase in ("C_discrete", "C_continuous"):
             raise NotImplementedError(
-                "_extract_residual for Phase C must read frozen Phase B policy — next plan."
+                "_extract_residual supports only Phase B in the active environment."
             )
         raise ValueError(f"Unknown phase: {self.phase!r}")
 
@@ -775,7 +764,7 @@ class LightPaintAviaryW1(gym.Env):
 
     def _compute_obs(self) -> Dict[str, np.ndarray]:
         """
-        Compute Dict observation per SRS §5.1.
+        Compute the Dict observation used by the policy.
 
         Returns dict with keys: drone_state (12,), future_ref (45,),
         target_mask (1,64,64), progress_mask (1,64,64).
@@ -919,7 +908,7 @@ class LightPaintAviaryW1(gym.Env):
             )
         else:
             raise NotImplementedError(
-                f"step() reward path for phase={self.phase!r} is scheduled for the next plan."
+                f"step() reward path for phase={self.phase!r} is not implemented."
             )
 
         # 9. Advance counters
