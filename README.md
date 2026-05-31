@@ -1,22 +1,34 @@
-# Lightpaint Team Package
+# LightPaint 드론 라이트 페인팅
 
-Light-painting reinforcement learning package for drone path tracking and LED
-control. The active package surface is intentionally small: canonical `DG`,
-one user-drawn path, PyBullet evaluation, the experiment dashboard, and the
-path/corner editing tools.
+드론이 기준 경로를 따라 이동하면서 LED를 켜고 끄는 방식으로 라이트 페인팅을 수행하는 강화학습 프로젝트입니다.
+
+## 프로젝트 목표
+
+- `DG` 문자 경로와 사용자 직접 입력 경로를 기준 경로로 사용합니다.
+- PyBullet Crazyflie 시뮬레이션에서 PID baseline과 PPO residual policy를 비교합니다.
+- 외란 조건 `M0`, `M1`, `M2`에서 경로 추종, 코너 감속, LED painting 품질을 평가합니다.
+
+기본 흐름은 다음과 같습니다.
 
 ```text
 reference path
 -> LightPaintRef
--> PyBullet CF2X + DSLPIDControl
--> Phase B velocity/LED residual policy
--> summary.json and CSV metrics
+-> PyBullet Crazyflie + PID controller
+-> Phase B PPO velocity/LED residual policy
+-> summary.json / metrics.csv
 ```
 
-## Setup
+## 필요한 것
 
-Python 3.10 or 3.11 is recommended. Python 3.13 may not support the pinned
-PyTorch wheel used by this project.
+- Python 3.10 또는 3.11
+- `requirements.txt`에 적힌 Python 패키지
+- 기본 기준 경로:
+  - `data/corner_hints/DG_reference.json`
+  - `data/drawn_paths/user/user_drawn_path.json`
+
+Python 3.13은 일부 PyTorch/SB3 의존성과 맞지 않을 수 있으므로 권장하지 않습니다.
+
+## 설치
 
 ```powershell
 python -m venv .venv
@@ -25,102 +37,72 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If the default Windows `python` points to 3.13, create the environment with:
+Windows에서 기본 `python`이 3.13이면 아래처럼 3.11로 가상환경을 만듭니다.
 
 ```powershell
 py -3.11 -m venv .venv
 ```
 
-## Verify
+## 사용 방법
 
-Run the test suite:
-
-```powershell
-python -m pytest -q --basetemp artifacts\pytest_tmp_run -p no:cacheprovider
-```
-
-Run a short smoke check:
-
-```powershell
-python -m src.train.train_phase_b --trajectory square --wind-mode M0 --max-steps 60 --total-timesteps 0 --bc-epochs 0 --output-dir artifacts\team_smoke_m0
-```
-
-The smoke run is execution-only. It may report `overall_pass=false` because it
-does not train a policy.
-
-## Dashboard
+대시보드를 실행합니다.
 
 ```powershell
 python -m src.train.experiment_dashboard --open
 ```
 
-Windows helpers:
+Windows helper를 써도 됩니다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\run_dashboard.ps1
 ```
 
-## Path Tools
+짧은 실행 확인은 아래 명령으로 합니다.
 
-- `tools/export_corner_reference.py`: generate a letter reference JSON and optional preview.
-- `tools/draw_path.html`: draw or edit a user path.
-- `tools/corner_hint_editor.html`: inspect or edit corner hints.
+```powershell
+python -m src.train.train_phase_b --trajectory square --wind-mode M0 --max-steps 60 --total-timesteps 0 --bc-epochs 0 --output-dir artifacts\team_smoke_m0
+```
 
-Generate the canonical letter reference:
+이 smoke run은 실행 경로 확인용입니다. 학습을 하지 않으므로 `overall_pass=false`가 나올 수 있습니다.
+
+## 경로 도구
+
+`DG` 문자 기준 경로를 다시 생성하려면:
 
 ```powershell
 python tools\export_corner_reference.py --trajectory letter --label DG --letter-plane xz --output data\corner_hints\DG_reference.json --preview-output artifacts\DG_reference_preview.png
 ```
 
-The committed user path is:
+사용자 경로는 브라우저에서 `tools/draw_path.html`을 열어 만들거나 수정합니다.
 
-```text
-data/drawn_paths/user/user_drawn_path.json
-```
+코너 힌트는 브라우저에서 `tools/corner_hint_editor.html`을 열어 확인하거나 수정합니다.
 
-Generated example paths and exploratory path files are intentionally excluded
-from Git.
+## 최종 Batch 실행
 
-## Final Goal Batch
+최종 batch는 기본적으로 두 경로를 사용합니다.
 
-The default final-goal batch uses only two canonical paths:
+- `DG`
+- `drawn`
 
-- `DG`: generated through the canonical letter reference builder.
-- `drawn`: loaded from `data/drawn_paths/user/user_drawn_path.json`.
-
-Plan the run first:
+먼저 dry-run으로 실행 계획을 확인합니다.
 
 ```powershell
 python -m src.train.run_final_goal_batch --profile final --dry-run --output-dir artifacts\final_goal_batch_plan
 ```
 
-Remove `--dry-run` only when starting the actual run. The built-in profiles are:
+실제로 학습을 시작하려면 `--dry-run`을 제거합니다.
 
-- `sanity`: `DG,drawn` x `M0` x seed `7`, execution check only.
-- `letters`: `DG` x `M0,M1,M2` x seeds `7,11,17`, 100000 PPO steps per run.
-- `standard`: `DG,drawn` x `M0,M1,M2` x seeds `7,11,17`, 100000 PPO steps per run.
-- `final`: `DG,drawn` x `M0,M1,M2` x seeds `7,11,17,23,29`, 300000 PPO steps per run.
+```powershell
+python -m src.train.run_final_goal_batch --profile final --output-dir artifacts\final_goal_batch_final
+```
 
-M1 continues from the matching M0 model, and M2 continues from the matching M1
-model. Final evaluation uses `--trained-action-filter corner_tangent_decel` and
-`--teacher-window-m 0.15`.
-
-After training, rerun final evaluation from the model manifest:
+학습이 끝난 뒤 모델 manifest로 최종 평가를 다시 실행할 수 있습니다.
 
 ```powershell
 python -m src.train.run_final_goal_batch --profile final --eval-only --model-manifest artifacts\final_goal_batch_final\best_model_manifest.json --output-dir artifacts\final_goal_eval_final
 python -m src.train.verify_final_goal_batch artifacts\final_goal_eval_final
 ```
 
-Key outputs:
+주요 결과 파일은 실행 폴더의 `summary.json`, `metrics.csv`, `matrix_results.csv`, `best_model_manifest.json`입니다.
 
-- `batch_summary.json`
-- `metrics.csv`
-- `matrix_results.csv`
-- `best_model_manifest.json`
-
-## Commit Surface
-
-Commit source code, tests, canonical path data, dashboard helpers, and the path
-generation/editing tools. Keep generated artifacts, trained model zips, exploratory
-paths, reports, local notes, and runtime caches out of Git.
+생성 결과, 학습 웨이트, 발표용 figure/data는 `artifacts/` 아래에 만들고 Git에는 포함하지 않습니다.
