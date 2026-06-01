@@ -1,4 +1,4 @@
-# LightPaint 드론 라이트 페인팅
+﻿# LightPaint 드론 라이트 페인팅
 
 드론이 기준 경로를 따라 이동하면서 LED를 켜고 끄는 방식으로 라이트 페인팅을 수행하는 강화학습 프로젝트입니다.
 
@@ -105,4 +105,14 @@ python -m src.train.verify_final_goal_batch artifacts\final_goal_eval_final
 
 주요 결과 파일은 실행 폴더의 `summary.json`, `metrics.csv`, `matrix_results.csv`, `best_model_manifest.json`입니다.
 
-생성 결과, 학습 웨이트, 발표용 figure/data는 `artifacts/` 아래에 만들고 Git에는 포함하지 않습니다.
+생성 결과와 임시 학습 산출물은 `artifacts/` 아래에 만들고 Git에는 포함하지 않습니다.
+
+## 발표 결과 재현
+
+최종 발표 슬라이드의 결과 화면과 지표는 아래 패키지에서 재현합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File repro\presentation_20260531\run_reproduce_figures.ps1
+```
+
+해당 패키지에는 발표 슬라이드, 선택된 웨이트, 평가 로그, figure 재생성 스크립트가 포함되어 있습니다.

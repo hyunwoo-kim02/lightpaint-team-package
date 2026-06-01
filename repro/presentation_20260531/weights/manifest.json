@@ -1,0 +1,19 @@
+{
+  "weights": [
+    {
+      "mode": "M0",
+      "file": "M0.zip",
+      "sha256": "B026F5F1FEFFE8005383E3F327596B9082A5E5A354438FDF3C572244420E1D4A"
+    },
+    {
+      "mode": "M1",
+      "file": "M1.zip",
+      "sha256": "E7B8BE34E61750662298208AFCA3588447509AC3490BB46BB1852BDAF673565C"
+    },
+    {
+      "mode": "M2",
+      "file": "M2.zip",
+      "sha256": "644088D1638675E97861FE42B8DC336C7005E8B1E8ADDFDAA2CEBB3BB4DDE9FF"
+    }
+  ]
+}

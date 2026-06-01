@@ -17,13 +17,11 @@ JSON contract:
 - `path_scale`: optional positive multiplier applied to `width_m` and `height_m`.
 - `strokes`: list of stroke objects.
 - Each stroke has `points` and optional `led`.
-- Stroke segments are LED ON by default.
-- Connector motion between strokes is inserted automatically with LED OFF.
 
 Run a user path:
 
 ```powershell
-python -m src.train.train_phase_a_pid --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --wind-mode M0 --seed 42
+python -m src.train.train_phase_a_pid --trajectory drawn --drawn-path data\drawn_paths\user\user_drawn_path.json --wind-mode M0
 ```
 
 Scale the same JSON without editing the file:
