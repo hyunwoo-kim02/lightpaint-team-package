@@ -20,11 +20,15 @@ reference path
 
 ## 필요한 것
 
+- Windows 10/11
+- PowerShell
 - Python 3.10 또는 3.11
 - `requirements.txt`에 적힌 Python 패키지
 - 기본 기준 경로:
   - `data/corner_hints/DG_reference.json`
   - `data/drawn_paths/user/user_drawn_path.json`
+
+설치와 실행 명령은 Windows PowerShell 기준입니다. PyBullet GUI 확인은 화면을 띄울 수 있는 일반 Windows 데스크톱 환경에서 실행합니다.
 
 ## 설치
 
