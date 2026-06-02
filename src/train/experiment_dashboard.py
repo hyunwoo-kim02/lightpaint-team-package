@@ -45,7 +45,7 @@ _VIDEO_EXTENSIONS = {".mp4", ".webm"}
 
 
 REWARD_FIELDS: tuple[dict[str, Any], ...] = (
-    {"key": "RESIDUAL_DELTA_MAX", "group": "action", "label": "RESIDUAL_DELTA_MAX", "min": 0.05, "max": 1.5, "step": 0.01, "help": "Phase B action[0:3]이 PID target velocity에 더하는 최대 residual 속도입니다. 값이 크면 정책이 속도를 강하게 바꿀 수 있지만 불안정해질 수 있습니다."},
+    {"key": "RESIDUAL_DELTA_MAX", "group": "action", "label": "RESIDUAL_DELTA_MAX", "min": 0.05, "max": 1.5, "step": 0.01, "help": "Phase B action[0:3]이 PID target velocity에 더하는 최대 residual 속도입니다. 값이 크면 정책의 속도 보정 폭이 커집니다."},
     {"key": "LED_RESIDUAL_SCALE", "group": "action", "label": "LED_RESIDUAL_SCALE", "min": 0.0, "max": 2.0, "step": 0.01, "help": "Phase B action[3]을 scripted LED reference에 더할 때 쓰는 배율입니다. 값이 크면 LED on/off 보정 폭이 커집니다."},
     {"key": "LED_ON_THRESHOLD", "group": "led", "label": "LED_ON_THRESHOLD", "min": 0.0, "max": 1.0, "step": 0.01, "help": "brightness가 이 값보다 클 때 LED가 켜진 것으로 판정합니다. painting, LED miss, flicker 해석에 영향을 줍니다."},
     {"key": "PATH_SIGMA_M", "group": "tracking", "label": "PATH_SIGMA_M", "min": 0.01, "max": 0.3, "step": 0.005, "help": "현재 위치가 reference path에서 벗어난 거리를 reward로 바꿀 때 쓰는 폭입니다. 작을수록 path 이탈을 더 강하게 벌합니다."},
@@ -54,7 +54,7 @@ REWARD_FIELDS: tuple[dict[str, Any], ...] = (
     {"key": "W_SCHEDULE", "group": "tracking", "label": "W_SCHEDULE", "min": 0.0, "max": 5.0, "step": 0.05, "help": "시간별 reference point를 따라가게 하는 reward 가중치입니다. 올리면 일정 속도/일정 시간표 유지 압력이 커집니다."},
     {"key": "W_ACTION_MAG", "group": "regularization", "label": "W_ACTION_MAG", "min": 0.0, "max": 5.0, "step": 0.05, "help": "RL residual action 크기에 대한 penalty입니다. 올리면 PID baseline에서 크게 벗어나는 행동을 억제합니다."},
     {"key": "W_ACTION_RATE", "group": "regularization", "label": "W_ACTION_RATE", "min": 0.0, "max": 3.0, "step": 0.05, "help": "이전 step 대비 residual action 변화량 penalty입니다. 올리면 급격한 속도/LED 명령 변화를 줄입니다."},
-    {"key": "LAMBDA_SMOOTH", "group": "regularization", "label": "LAMBDA_SMOOTH", "min": 0.0, "max": 2.0, "step": 0.05, "help": "최종 제어 명령의 smoothness penalty입니다. PyBullet에서는 RPM 변화, fallback에서는 velocity command 변화에 영향을 줍니다."},
+    {"key": "LAMBDA_SMOOTH", "group": "regularization", "label": "LAMBDA_SMOOTH", "min": 0.0, "max": 2.0, "step": 0.05, "help": "최종 제어 명령의 smoothness penalty입니다. PyBullet에서는 RPM 변화, standalone 환경에서는 velocity command 변화에 영향을 줍니다."},
     {"key": "W_NEW_TARGET", "group": "painting", "label": "W_NEW_TARGET", "min": 0.0, "max": 5.0, "step": 0.05, "help": "아직 칠하지 않은 target pixel을 새로 칠했을 때의 보상입니다. 올리면 coverage를 더 적극적으로 늘리려 합니다."},
     {"key": "W_OFF_TARGET", "group": "painting", "label": "W_OFF_TARGET", "min": 0.0, "max": 5.0, "step": 0.05, "help": "target mask 밖을 칠했을 때의 penalty입니다. 올리면 글자 밖으로 빛이 새는 행동을 더 강하게 벌합니다."},
     {"key": "W_REPAINT", "group": "painting", "label": "W_REPAINT", "min": 0.0, "max": 3.0, "step": 0.05, "help": "이미 칠한 영역을 다시 칠하는 penalty입니다. 올리면 같은 부분을 반복해서 칠하는 행동을 억제합니다."},
@@ -70,7 +70,7 @@ REWARD_FIELDS: tuple[dict[str, Any], ...] = (
     {"key": "W_CORNER_ACCEL", "group": "corner", "label": "W_CORNER_ACCEL", "min": 0.0, "max": 10.0, "step": 0.1, "help": "corner 접근 구간에서 reference tangent 방향으로 더 가속하는 residual을 벌하는 항입니다."},
     {"key": "W_CORNER_LATERAL", "group": "corner", "label": "W_CORNER_LATERAL", "min": 0.0, "max": 10.0, "step": 0.1, "help": "corner 근처에서 tangent와 무관한 옆 방향 residual을 벌하는 항입니다. 불필요한 lateral 흔들림을 줄입니다."},
     {"key": "W_COMPLETION", "group": "terminal", "label": "W_COMPLETION", "min": 0.0, "max": 10.0, "step": 0.1, "help": "episode 종료 시 painting coverage가 좋을 때 주는 bonus입니다. 최종 결과물 품질을 직접 밀어줍니다."},
-    {"key": "W_INCOMPLETE", "group": "terminal", "label": "W_INCOMPLETE", "min": 0.0, "max": 10.0, "step": 0.1, "help": "episode 종료 시 target coverage가 부족할 때 주는 penalty입니다. 미완성 light painting을 줄입니다."},
+    {"key": "W_INCOMPLETE", "group": "terminal", "label": "W_INCOMPLETE", "min": 0.0, "max": 10.0, "step": 0.1, "help": "episode 종료 시 target coverage 기준을 반영하는 penalty입니다. 최종 coverage 향상을 유도합니다."},
     {"key": "W_TERMINAL_BOUNDS", "group": "terminal", "label": "W_TERMINAL_BOUNDS", "min": 0.0, "max": 300.0, "step": 5.0, "help": "드론이 허용 bounds 밖으로 나가 episode가 종료될 때의 penalty입니다. 너무 낮으면 crash 회피 학습이 약해질 수 있습니다."},
 )
 
@@ -154,12 +154,12 @@ EXPERIMENT_STAGES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "m0_corner",
-        "title": "1. M0 corner sanity",
+        "title": "1. M0 corner quick check",
         "goal": "외란 없는 상태에서 짧은 PPO 설정으로 Phase B residual velocity와 reward/metric 흐름이 동작하는지 확인합니다.",
         "preset": "short",
         "wind_mode": "M0",
         "recommended": {"trajectory": "square", "max_steps": 90, "total_timesteps": 2048},
-        "pass": "Run 상태가 complete이고 summary/metrics/model_path가 생성되어야 합니다. 이 단계는 빠른 sanity라 overall_pass가 false일 수 있습니다.",
+        "pass": "Run 상태가 complete이고 summary/metrics/model_path가 생성되어야 합니다. 이 단계는 빠른 실행 확인이라 overall_pass가 false일 수 있습니다.",
         "next": "문제가 없으면 M0 full train 단계로 이동합니다.",
     },
     {
@@ -1693,7 +1693,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div class="status-card">
           <span>설정 저장</span>
-          <strong id="draftStatus">자동 임시저장 대기</strong>
+          <strong id="settingsStatus">자동 저장 대기</strong>
         </div>
       </div>
       <section id="pipeline" class="view">
@@ -1701,7 +1701,7 @@ INDEX_HTML = r"""<!doctype html>
           <h2>실험 로드맵</h2>
           <div class="toolbar-actions">
             <button class="btn secondary" id="applyStageSmoke">0단계 smoke 적용</button>
-            <button class="btn secondary" id="applyStageM0">1단계 M0 sanity 적용</button>
+            <button class="btn secondary" id="applyStageM0">1단계 M0 quick check 적용</button>
             <button class="btn secondary" id="applyStageM0Full">2단계 M0 full 적용</button>
             <button class="btn secondary" id="applyStageM1">3단계 M1 적용</button>
             <button class="btn secondary" id="applyStageM2">4단계 M2 적용</button>
@@ -1721,7 +1721,7 @@ INDEX_HTML = r"""<!doctype html>
               <code>overall_pass=false</code>여도 실패로 보지 않습니다.
             </div>
             <div style="margin-top:12px" class="notice">
-              권장 흐름: smoke 확인 -> DG/user drawn batch 계획 확인 -> dual-path final 평가.
+              권장 흐름: smoke 확인 -> batch 계획 확인 -> dual-path final 평가.
             </div>
           </div>
           <div class="panel span-12">
@@ -1737,8 +1737,8 @@ INDEX_HTML = r"""<!doctype html>
             <button class="btn secondary" id="presetSmoke" title="빠른 설정값만 적용합니다. 실제 실행은 Run 시작 버튼을 눌러야 시작됩니다.">Smoke preset</button>
             <button class="btn secondary" id="presetShort" title="짧은 PPO 학습 설정값만 적용합니다. 실제 실행은 Run 시작 버튼을 눌러야 시작됩니다.">Short PPO preset</button>
             <button class="btn secondary" id="presetRobust" title="M2 외란 강건성 실험 설정값만 적용합니다. 실제 실행은 Run 시작 버튼을 눌러야 시작됩니다.">M2 강건성 preset</button>
-            <button class="btn secondary" id="saveDraft">현재 설정 저장</button>
-            <button class="btn secondary" id="restoreDraft">저장 설정 복원</button>
+            <button class="btn secondary" id="saveSettings">현재 설정 저장</button>
+            <button class="btn secondary" id="restoreSettings">저장 설정 복원</button>
             <button class="btn secondary" id="restoreBackup">이전 설정 복원</button>
             <button class="btn secondary" id="resetBaseline">기준값 복원</button>
           </div>
@@ -1811,8 +1811,8 @@ INDEX_HTML = r"""<!doctype html>
         <div class="toolbar">
           <h2>전체 Batch 실행</h2>
           <div class="toolbar-actions">
-            <button class="btn secondary" id="applyBatchLetters">DG batch 적용</button>
-            <button class="btn secondary" id="applyBatchStandard">DG+drawn batch 적용</button>
+            <button class="btn secondary" id="applyBatchLetters">Letter batch 적용</button>
+            <button class="btn secondary" id="applyBatchStandard">Dual-path batch 적용</button>
             <button class="btn secondary" id="applyBatchFinalPlan">dual-path final 계획 적용</button>
             <button class="btn secondary" id="batchPreviewBtn">Batch 명령 갱신</button>
             <button class="btn" id="batchStartBtn">Batch 시작</button>
@@ -1822,13 +1822,13 @@ INDEX_HTML = r"""<!doctype html>
           <div class="panel span-5">
             <h3>Batch profile</h3>
             <div class="notice" style="margin-bottom:10px;">
-              최종 목표 검증은 단일 run이 아니라 retained path, 외란, seed를 모두 포함한 batch로 판단합니다.
-              <code>letters</code>는 DG만 실행하고, <code>standard</code>/<code>final</code>은 DG와 user drawn path만 실행합니다.
+              최종 목표 검증은 단일 run이 아니라 기준 경로, 외란, seed의 전체 조건 batch로 판단합니다.
+              <code>letters</code>는 기본 글자 경로만 실행하고, <code>standard</code>/<code>final</code>은 기본 글자 경로와 user drawn path를 실행합니다.
               기본값은 안전하게 dry-run 계획 확인으로 시작합니다.
             </div>
             <div class="field-grid">
               <label class="wide-field">Batch run name<input id="batch_run_name"></label>
-              <label>Profile<select id="batch_profile"><option>sanity</option><option>letters</option><option>standard</option><option>final</option></select></label>
+              <label>Profile<select id="batch_profile"><option value="sanity">quick</option><option>letters</option><option>standard</option><option>final</option></select></label>
               <label class="check"><input id="batch_dry_run" type="checkbox">Dry-run 계획만 생성</label>
               <label class="check"><input id="batch_resume" type="checkbox">완료 run 재사용</label>
               <label class="check"><input id="batch_continue_on_error" type="checkbox">실패해도 다음 run 진행</label>
@@ -1848,7 +1848,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="panel span-12">
             <h3>사용 기준</h3>
             <div class="notice">
-              <code>sanity</code>는 실행 경로 확인용입니다. 글자별 장시간 sweep은 <code>letters</code>,
+              quick profile은 빠른 실행 확인용입니다. 글자 경로 실험은 <code>letters</code>,
               팀 공유용 전체 성능 비교는 <code>standard</code>, 최종 목표 달성 주장은 <code>final</code>
               profile의 <code>batch_summary.json</code>과
               <code>batch_final_goal_criteria.batch_final_goal_pass</code>로 판단합니다.
@@ -1934,7 +1934,7 @@ INDEX_HTML = r"""<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const DRAFT_KEY = "lightpaint_dashboard_draft_v2";
+    const SETTINGS_KEY = "lightpaint_dashboard_settings_v2";
     const BACKUP_KEY = "lightpaint_dashboard_backup_v2";
     const state = {
       defaults: {},
@@ -1971,17 +1971,17 @@ INDEX_HTML = r"""<!doctype html>
       run_name: "대시보드와 artifacts 폴더에 기록될 실험 이름입니다. 비워두면 trajectory와 wind mode를 기준으로 자동 생성됩니다.",
       trajectory: "reference 경로 종류입니다. square는 생성 사각형, letter는 글자 이미지 기반 경로, drawn은 tools/draw_path.html에서 만든 JSON 경로입니다.",
       wind_mode: "외란 조건입니다. M0는 외란 없음, M1/M2는 PyBullet applyExternalForce 기반 외란을 적용하는 강건성 실험입니다.",
-      label: "trajectory가 letter일 때 렌더링할 글자입니다. 현재 기본 목표는 DG입니다.",
+      label: "trajectory가 letter일 때 렌더링할 글자입니다. 기본값은 기본 글자 경로입니다.",
       square_side: "trajectory가 square일 때 한 변의 길이입니다. 추천값: 기본 0.8m. path_scale이 있으면 최종 길이에 함께 반영됩니다.",
       letter_plane: "letter reference를 어느 평면에 배치할지 정합니다. xz는 앞에서 보는 글자 평면, xy는 수평 평면입니다.",
       drawn_path: "trajectory가 drawn일 때 사용할 JSON 파일 경로입니다. 상대 경로는 lightpaint-team-package 기준입니다.",
-      path_scale: "전체 reference 경로 크기 배율입니다. 추천값: 비움 또는 1.0부터 시작. 비워두면 각 reference 생성기의 기본값 또는 drawn JSON 내부 값을 사용합니다.",
+      path_scale: "전체 reference 경로 크기 배율입니다. 추천값: 비움 또는 1.0부터 시작. 비워두면 각 reference 생성기의 기본값 또는 drawn JSON에 저장된 값을 사용합니다.",
       speed: "reference가 진행되는 기준 속도입니다. 추천값: 0.30~0.35 m/s, 기본 0.35. Phase B는 이 속도 벡터에 residual velocity를 더해 PID target velocity를 만듭니다.",
       width_m: "letter/drawn reference의 목표 너비입니다. 추천값: 비워두고 시작, 필요하면 0.7~1.0m 범위에서 조정. square에는 적용되지 않습니다.",
       height_m: "letter/drawn reference의 목표 높이입니다. 추천값: 비워두고 시작, 글자가 너무 작거나 크면 0.5~0.9m 범위에서 조정. square에는 적용되지 않습니다.",
-      max_waypoints: "letter/drawn 경로의 waypoint 수 상한입니다. 추천값: 보통 비움. DG가 너무 오래 걸리면 120~250 정도로 제한합니다.",
-      seed: "환경 reset, 정책 초기화, BC sample 순서 등에 쓰이는 난수 seed입니다. 추천값: 비교 실험은 7로 고정, 후보가 좋아지면 3~5개 seed로 재확인하세요.",
-      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 sanity 2048~8192, 단일 full 후보 10만부터 시작, M2/최종 후보는 20만~30만 이상을 사용합니다. DG/user drawn 평가는 run_final_goal_batch profile letters/standard/final을 사용하세요.",
+      max_waypoints: "letter/drawn 경로의 waypoint 수 상한입니다. 추천값: 보통 비움. 경로가 너무 길면 120~250 정도로 제한합니다.",
+      seed: "환경 reset, 정책 초기화, BC sample 순서 등에 쓰이는 난수 seed입니다. 비교 실험은 같은 seed 조건을 유지하고, 후보가 좋아지면 여러 seed로 재확인하세요.",
+      total_timesteps: "PPO 학습 step 수입니다. 추천값: smoke 0, 빠른 확인 2048~8192, 단일 full 후보 10만부터 시작, M2/최종 후보는 20만~30만 이상을 사용합니다. 최종 평가는 run_final_goal_batch profile letters/standard/final을 사용하세요.",
       max_steps: "episode당 최대 step 수입니다. 추천값: 학습/평가는 비워서 자동 계산. smoke는 2~90, square 전체 평가는 대략 350~400입니다.",
       settle_time: "reference가 끝난 뒤 마지막 목표 주변에서 더 실행할 시간입니다. 추천값: 2.0s, 최종 영상/평가는 2~3s. max_steps를 비우면 자동 horizon 계산에 반영됩니다.",
       ctrl_freq: "환경 step/control frequency입니다. 추천값: 30Hz. PyBullet physics frequency보다 낮거나 같아야 합니다.",
@@ -2000,7 +2000,7 @@ INDEX_HTML = r"""<!doctype html>
       learning_rate: "PPO optimizer learning rate입니다. 추천값: 3e-4. 정책이 흔들리면 1e-4로 낮춰보세요.",
       gamma: "할인율입니다. 추천값: 0.99. 1에 가까울수록 미래 reward를 더 강하게 봅니다.",
       gae_lambda: "GAE advantage smoothing 계수입니다. 추천값: 0.95. PPO advantage 추정의 bias/variance 균형에 영향을 줍니다.",
-      ent_coef: "entropy bonus 계수입니다. 추천값: 0.0부터 시작, 탐색이 너무 부족하면 0.001~0.01 범위에서만 올립니다.",
+      ent_coef: "entropy bonus 계수입니다. 탐색 강도를 높일 때 0.001~0.01 범위에서 조정합니다.",
       clip_range: "PPO policy update clipping 범위입니다. 추천값: 0.2. 작을수록 업데이트가 보수적입니다.",
       log_std_init: "초기 Gaussian policy 표준편차의 log 값입니다. 추천값: -2.0. 낮을수록 초기 action 탐색 폭이 작습니다.",
       teacher_gain: "BC teacher가 corner 접근 시 얼마나 강하게 감속 residual을 줄지 정합니다. 추천값: 0.10, 후보 탐색은 0.05~0.20.",
@@ -2012,7 +2012,7 @@ INDEX_HTML = r"""<!doctype html>
       bc_learning_rate: "BC optimizer learning rate입니다. 추천값: 1e-3. loss가 흔들리면 3e-4로 낮춥니다.",
       bc_nonzero_weight: "teacher action이 0이 아닌 corner 감속 sample에 주는 추가 가중치입니다. 추천값: 1.0, corner sample이 묻히면 2~4.",
       trained_action_filter: "평가 때 trained action을 그대로 쓸지, corner tangent 감속 성분만 남길지 정합니다. 추천값: 최종/공유 평가는 corner_tangent_decel, 후처리 없는 확인은 none.",
-      batch_profile: "전체 batch 범위입니다. letters는 DG만, standard/final은 DG와 user drawn path만 사용합니다. 다른 경로는 필요할 때 명시적으로 생성해서 실행합니다.",
+      batch_profile: "전체 batch 범위입니다. letters는 기본 글자 경로, standard/final은 기본 글자 경로와 user drawn path를 사용합니다. 다른 경로는 필요할 때 명시적으로 생성해서 실행합니다.",
       batch_dry_run: "체크하면 실제 학습을 시작하지 않고 실행 계획과 명령만 생성합니다. 공유 전에는 먼저 켜고 계획을 확인하세요.",
       batch_resume: "체크하면 이미 summary.json이 있는 run은 재사용합니다. 장시간 batch가 중간에 끊겨도 이어서 돌릴 때 필요합니다.",
       batch_continue_on_error: "체크하면 한 run이 실패해도 다음 trajectory/wind/seed로 넘어갑니다. 최종 batch_summary에서 실패 run을 확인합니다.",
@@ -2078,8 +2078,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     function payload() { return {config: collectConfig(), reward: collectReward()}; }
     function batchPayload() { return {batch: collectBatch(), reward: collectReward()}; }
-    function setDraftStatus(text) {
-      const el = $("draftStatus");
+    function setSettingsStatus(text) {
+      const el = $("settingsStatus");
       if (el) el.textContent = text;
     }
     function nowText() {
@@ -2116,10 +2116,10 @@ INDEX_HTML = r"""<!doctype html>
         button.disabled = false;
       }
     }
-    function saveDraft(reason="auto") {
+    function saveSettings(reason="auto") {
       const data = {...payload(), batch: collectBatch(), savedAt: new Date().toISOString(), reason};
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
-      setDraftStatus(`자동 임시저장 ${nowText()}`);
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
+      setSettingsStatus(`자동 저장 ${nowText()}`);
       return data;
     }
     function saveBackup(reason="backup") {
@@ -2155,8 +2155,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     function scheduleAutosave() {
       clearTimeout(state.autosaveTimer);
-      setDraftStatus("수정됨, 자동 저장 대기");
-      state.autosaveTimer = setTimeout(() => saveDraft("autosave"), 350);
+      setSettingsStatus("수정됨, 자동 저장 대기");
+      state.autosaveTimer = setTimeout(() => saveSettings("autosave"), 350);
     }
     function switchTab(id) {
       document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === id));
@@ -2297,7 +2297,7 @@ INDEX_HTML = r"""<!doctype html>
       setInput("batch_trained_action_filter", "corner_tangent_decel");
       setInput("batch_teacher_window_m", 0.15);
       renderBatchProfileInfo();
-      saveDraft(`batch_${profile}`);
+      saveSettings(`batch_${profile}`);
       refreshBatchPreview();
       const mode = dryRun ? "계획 확인" : "실제 학습";
       toast(`${profile} batch ${mode} 설정을 적용했습니다. 실행하려면 Batch 시작을 누르세요.`, "good");
@@ -2358,7 +2358,7 @@ INDEX_HTML = r"""<!doctype html>
     function applyPreset(name) {
       saveBackup("before_preset_" + name);
       setPresetValues(name);
-      saveDraft("preset_" + name);
+      saveSettings("preset_" + name);
       toast(`${name} preset을 적용했습니다. 아직 실행은 시작되지 않았습니다. 실행하려면 Run 시작을 누르세요.`, "warn");
       refreshPreview();
     }
@@ -2380,7 +2380,7 @@ INDEX_HTML = r"""<!doctype html>
         setInput("load_model", state.selectedRunData.model_path);
         setInput("reset_num_timesteps", false);
       }
-      saveDraft("stage_" + stageId);
+      saveSettings("stage_" + stageId);
       refreshPreview();
       switchTab("setup");
       const modelText = $("load_model")?.value ? " 선택된 이전 모델 경로도 load_model에 넣었습니다." : "";
@@ -2401,7 +2401,7 @@ INDEX_HTML = r"""<!doctype html>
       setInput("reset_num_timesteps", false);
       const title = state.selectedRunData?.title || state.selectedRunData?.run_id || "selected_model";
       setInput("run_name", `${evalOnly ? "eval" : "continue"}_${title}`);
-      saveDraft(evalOnly ? "eval_selected_model" : "continue_selected_model");
+      saveSettings(evalOnly ? "eval_selected_model" : "continue_selected_model");
       refreshPreview();
       switchTab("setup");
       toast(evalOnly ? "선택 모델을 평가 전용 설정으로 연결했습니다." : "선택 모델을 이어서 학습할 load_model으로 연결했습니다.", "good");
@@ -2448,7 +2448,7 @@ INDEX_HTML = r"""<!doctype html>
       btn.classList.add("busy");
       btn.textContent = "Batch 시작 중";
       try {
-        saveDraft("before_batch_start");
+        saveSettings("before_batch_start");
         toast("Batch 시작 요청을 보냈습니다. Results 탭에서 batch_summary.json과 log를 확인하세요.", "warn");
         const data = await api("/api/batches", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(batchPayload())});
         state.selectedRun = data.run_id;
@@ -2472,7 +2472,7 @@ INDEX_HTML = r"""<!doctype html>
       btn.classList.add("busy");
       btn.textContent = "시작 중";
       try {
-        saveDraft("before_start");
+        saveSettings("before_start");
         toast("Run 시작 요청을 보냈습니다. subprocess가 생성되면 상태가 실행 중으로 바뀝니다.", "warn");
         const data = await api("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload())});
         state.selectedRun = data.run_id;
@@ -2762,7 +2762,7 @@ INDEX_HTML = r"""<!doctype html>
       a.download = "lightpaint_dashboard_preset.json";
       a.click();
       URL.revokeObjectURL(a.href);
-      saveDraft("export_preset");
+      saveSettings("export_preset");
       toast("현재 설정 preset 파일을 내보냈습니다.", "good");
     }
     async function importPreset(file) {
@@ -2770,7 +2770,7 @@ INDEX_HTML = r"""<!doctype html>
       const text = await file.text();
       const data = JSON.parse(text);
       applyPayload(data);
-      saveDraft("import_preset");
+      saveSettings("import_preset");
       toast("Preset을 가져왔습니다. 이전 설정은 backup에 보관했습니다.", "good");
       refreshPreview();
     }
@@ -2788,12 +2788,12 @@ INDEX_HTML = r"""<!doctype html>
       renderReward();
       renderPipeline();
       applyDefaults();
-      const restoredDraft = restoreStored(DRAFT_KEY);
-      if (restoredDraft) {
-        setDraftStatus("저장된 draft 복원됨");
+      const restoredSettings = restoreStored(SETTINGS_KEY);
+      if (restoredSettings) {
+        setSettingsStatus("저장된 설정 복원됨");
         toast("이 브라우저에 저장된 마지막 설정을 복원했습니다.", "good");
       } else {
-        setDraftStatus("기준값 사용 중");
+        setSettingsStatus("기준값 사용 중");
       }
       installHelp();
       document.querySelectorAll(".tab").forEach(btn => btn.addEventListener("click", () => switchTab(btn.dataset.tab)));
@@ -2812,17 +2812,17 @@ INDEX_HTML = r"""<!doctype html>
       $("applyStageM1").addEventListener("click", () => applyStage("m1_disturbance"));
       $("applyStageM2").addEventListener("click", () => applyStage("m2_disturbance"));
       $("applyStageFinal").addEventListener("click", () => applyStage("final_painting"));
-      $("saveDraft").addEventListener("click", () => {
-        saveDraft("manual");
-        toast("현재 설정을 브라우저 draft에 저장했습니다.", "good");
+      $("saveSettings").addEventListener("click", () => {
+        saveSettings("manual");
+        toast("현재 설정을 브라우저에 저장했습니다.", "good");
       });
-      $("restoreDraft").addEventListener("click", () => {
-        if (restoreStored(DRAFT_KEY)) toast("저장된 설정을 복원했습니다.", "good");
+      $("restoreSettings").addEventListener("click", () => {
+        if (restoreStored(SETTINGS_KEY)) toast("저장된 설정을 복원했습니다.", "good");
         else toast("복원할 저장 설정이 없습니다.", "warn");
       });
       $("restoreBackup").addEventListener("click", () => {
         if (restoreStored(BACKUP_KEY)) {
-          saveDraft("restore_backup");
+          saveSettings("restore_backup");
           toast("preset/import/reset 직전 설정을 복원했습니다.", "good");
         } else {
           toast("복원할 이전 설정 backup이 없습니다.", "warn");
@@ -2831,7 +2831,7 @@ INDEX_HTML = r"""<!doctype html>
       $("resetBaseline").addEventListener("click", () => {
         saveBackup("before_reset_baseline");
         applyDefaults();
-        saveDraft("reset_baseline");
+        saveSettings("reset_baseline");
         refreshPreview();
         toast("서버 기준 baseline 값으로 복원했습니다. 이전 설정은 backup에 보관했습니다.", "warn");
       });
@@ -2843,7 +2843,7 @@ INDEX_HTML = r"""<!doctype html>
           if (el) el.value = value;
           if (range) range.value = value;
         }
-        saveDraft("reset_reward");
+        saveSettings("reset_reward");
         refreshPreview();
         toast("Reward 항목만 기준값으로 복원했습니다.", "warn");
       });

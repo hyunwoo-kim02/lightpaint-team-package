@@ -4,7 +4,7 @@ Purpose: Load trained policy, run 1 deterministic episode, save 3D flight PNG,
          per-frame snapshots, and mp4 to artifacts/visualization/.
 
 CLI:
-    python -m src.train.visualize_flight --model models/rl_lp_w1.zip --letter L
+    python -m src.train.visualize_flight --model models/policy.zip --letter L
 """
 import os
 import sys
@@ -14,10 +14,10 @@ from pathlib import Path
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 
-# Resolve package root for both `python -m` and direct invocation
+# Resolve package root for both `python -m` and direct invocation.
 _HERE = Path(__file__).resolve().parent
-_PKG_ROOT = _HERE.parent.parent   # .../rl-lightpaint
-_REPO_ROOT = _PKG_ROOT.parent.parent  # .../mini_script
+_PKG_ROOT = _HERE.parent.parent
+_REPO_ROOT = _PKG_ROOT.parent.parent
 for _p in [str(_PKG_ROOT), str(_REPO_ROOT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -36,13 +36,13 @@ def _lazy_import_ppo():
     return PPO
 
 
-_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
+_WIND_ALIAS_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
 
 
 def _normalize_wind_arg(wind: str) -> str:
-    """Normalize legacy W0-W2 CLI aliases to current M0-M2 wind mode names."""
+    """Normalize W0-W2 CLI aliases to M0-M2 wind mode names."""
     wind_key = str(wind).upper()
-    return _LEGACY_WIND_TO_MODE.get(wind_key, wind_key)
+    return _WIND_ALIAS_TO_MODE.get(wind_key, wind_key)
 
 
 # ----------------------------------------------------------------------
@@ -362,7 +362,7 @@ def save_phase_a_summary(
     ref_segment_led: Optional[np.ndarray] = None,
     phase_display_name: str = "Phase A",
 ) -> None:
-    """Produce phase_a_<label>_<wind_mode>_summary.png — single 4-panel figure."""
+    """Produce phase_a_<label>_<wind_mode>_summary.png as a single 4-panel figure."""
     from src.env.lightpaint_geometry import X_MIN, X_MAX, Z_MIN, Z_MAX
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 9))
@@ -472,7 +472,7 @@ def save_phase_a_summary(
                 family="monospace")
 
     fig.suptitle(
-        f"{phase_display_name} summary  — label={label!r}  wind={wind_mode}",
+        f"{phase_display_name} summary - label={label!r}  wind={wind_mode}",
         color="white", fontsize=13,
     )
     plt.tight_layout(rect=(0, 0, 1, 0.96))
@@ -501,8 +501,8 @@ def save_reference_path_diagnostic(
       [0] Target mask (faded green) + reference waypoints colored by visit
           order (viridis: dark→start, bright→end). Drone trajectory overlaid
           in faint red dots.
-      [1] arc-length cumulen vs waypoint index — verifies monotonic ordering.
-      [2] arc-length traversed vs simulation step — shows V_REF=0.5 m/s ramp
+      [1] arc-length cumulen vs waypoint index, verifies monotonic ordering.
+      [2] arc-length traversed vs simulation step, shows V_REF=0.5 m/s ramp
           and final clamp at total_len.
     """
     from src.env.lightpaint_geometry import (
@@ -554,7 +554,7 @@ def save_reference_path_diagnostic(
     ax.set_xlabel("x (m)", color="white")
     ax.set_ylabel("z (m)", color="white")
     ax.set_title(
-        f"Reference path '{label}' — {n} waypoints (color = visit order)",
+        f"Reference path '{label}' - {n} waypoints (color = visit order)",
         color="white", fontsize=10,
     )
     ax.legend(fontsize=7, facecolor="#222222", labelcolor="white", loc="upper right")
@@ -609,7 +609,7 @@ def save_reference_path_diagnostic(
     ax.grid(True, alpha=0.2, color="gray")
 
     fig.suptitle(
-        f"{phase_display_name} reference-path diagnostic — label={label!r}  wind={wind_mode}",
+        f"{phase_display_name} reference-path diagnostic - label={label!r}  wind={wind_mode}",
         color="white", fontsize=13,
     )
     plt.tight_layout(rect=(0, 0, 1, 0.95))
@@ -746,7 +746,7 @@ def save_3d_flight_png(
     ax.yaxis.pane.fill = False
     ax.zaxis.pane.fill = False
     ax.set_title(
-        f"RL Light Painting — Letter '{letter}' Flight Trajectory\n"
+        f"RL Light Painting - Letter '{letter}' Flight Trajectory\n"
         f"(red=LED ON, cyan=LED OFF)  n_steps={len(pos_list)}",
         color="white", fontsize=11,
     )
@@ -873,9 +873,9 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
               flush=True)
         return True
     except Exception as e_mp4:
-        print(f"[viz] mp4 저장 실패: {e_mp4}. GIF fallback을 시도합니다.", flush=True)
+        print(f"[viz] mp4 저장 실패: {e_mp4}. GIF 저장을 시도합니다.", flush=True)
 
-    # GIF fallback
+    # Save GIF when mp4 encoding is unavailable.
     try:
         import imageio
         gif_path = out_path.with_suffix(".gif")
@@ -885,10 +885,10 @@ def save_mp4(frames_dir: Path, out_path: Path, fps: int = 10) -> bool:
         if out_path.exists():
             out_path.unlink()
         gif_path.rename(out_path)
-        print(f"[viz] GIF fallback 저장 위치: {out_path} ({len(frames_arr)} frames)", flush=True)
+        print(f"[viz] GIF 저장 위치: {out_path} ({len(frames_arr)} frames)", flush=True)
         return True
     except Exception as e_gif:
-        print(f"[viz] GIF fallback도 실패했습니다: {e_gif}", flush=True)
+        print(f"[viz] GIF 저장 실패: {e_gif}", flush=True)
         return False
 
 
@@ -952,7 +952,7 @@ def main(args: argparse.Namespace) -> None:
         frames_dir, fps_subsample=1
     )
 
-    # Save mp4 (or GIF fallback)
+    # Save mp4, or GIF when mp4 encoding is unavailable.
     mp4_path = out_dir / "rl_lp_w1_flight.mp4"
     mp4_ok = save_mp4(frames_dir, mp4_path, fps=min(FRAME_FPS, max(1, n_frames // 10)))
 
@@ -968,14 +968,14 @@ def main(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for visualize_flight."""
     parser = argparse.ArgumentParser(
-        description="Visualize trained rl-lightpaint policy flight."
+        description="Visualize trained LightPaint policy flight."
     )
     parser.add_argument("--model", default="models/rl_lp_w1.zip",
                         help="Path to trained PPO model (.zip).")
     parser.add_argument("--letter", default="L",
                         help="Letter to visualize (default: L).")
     parser.add_argument("--wind", default="M0",
-                        help="Wind mode M0/M1/M2, or legacy W0/W1/W2 alias (default: M0).")
+                        help="Wind mode M0/M1/M2, or W0/W1/W2 alias (default: M0).")
     parser.add_argument("--out-dir", default=str(_PKG_ROOT / "artifacts" / "visualization"),
                         help="Output directory for visualization artifacts.")
     return parser.parse_args()

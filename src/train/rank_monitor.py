@@ -1,14 +1,4 @@
-"""
-rank_monitor.py — RankMonitorCallback: feature-rank monitoring for rl-lightpaint.
-Purpose: MONITORING ONLY — compute effective rank of feature matrix, log to TensorBoard,
-         warn on collapse. Never aborts training (per SRS_v2.2 §6.3.1.1).
-SRS reference: SRS_v2.2 §6.3.1.1, system-spec.md AC-3.
-Kit reuse: Code skeleton transcribed from SRS_v2.2 §6.3.1.1 verbatim.
-
-Role (v2.2): MONITORING/DIAGNOSTIC only. PFO auxiliary loss (§6.3.1.2, Week 2 Day 1)
-             is the active mitigation. This callback logs rank_fraction to TensorBoard
-             and prints [PFO-WARN] lines for early visibility. Never returns False.
-"""
+"""Feature-rank monitoring callback for LightPaint training."""
 import warnings
 from typing import Optional
 
@@ -18,15 +8,12 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 class RankMonitorCallback(BaseCallback):
     """
-    Feature-rank monitoring callback per SRS_v2.2 §6.3.1.1.
+    Feature-rank monitoring callback.
 
     Computes the effective rank of the feature matrix from
     model.policy.features_extractor.last_features every eval_freq steps,
     logs diagnostics/feature_rank and diagnostics/feature_rank_fraction
-    to TensorBoard, and prints [PFO-WARN] if rank drops below threshold.
-
-    CRITICAL: Never returns False — monitoring only.
-    Full collapse mitigation is PFO auxiliary loss (Week 2 Day 1, SRS §6.3.1.2).
+    to TensorBoard, and prints a warning if rank drops below threshold.
     """
 
     def __init__(
@@ -38,8 +25,7 @@ class RankMonitorCallback(BaseCallback):
         """
         Args:
             every_n_steps: Log feature rank every this many training steps.
-            abort_threshold: Fractional drop below initial rank that triggers [PFO-WARN].
-                             Does NOT abort training (monitoring only per SRS §6.3.1.1).
+            abort_threshold: Fractional drop below initial rank that triggers a warning.
             verbose: SB3 verbosity level.
         """
         super().__init__(verbose)
@@ -57,14 +43,14 @@ class RankMonitorCallback(BaseCallback):
         """
         if features.dim() < 2:
             return 1
-        # Use 2D matrix: (batch, features_dim) — already the expected shape
+        # Use 2D matrix: (batch, features_dim), already the expected shape.
         f = features.float()
         if f.shape[0] < 2:
             return int(f.shape[-1])
         try:
             rank = int(torch.linalg.matrix_rank(f).item())
         except Exception:
-            # Fallback: SVD-based rank estimate
+            # SVD-based rank estimate if matrix_rank is unavailable.
             try:
                 svd_vals = torch.linalg.svdvals(f)
                 threshold = svd_vals[0] * max(f.shape) * torch.finfo(f.dtype).eps
@@ -78,8 +64,8 @@ class RankMonitorCallback(BaseCallback):
         Per-step callback hook.
 
         Logs feature rank to TensorBoard every every_n_steps.
-        Prints [PFO-WARN] if rank fraction drops below (1 - abort_threshold).
-        Always returns True (monitoring-only; never aborts training).
+        Prints a warning if rank fraction drops below (1 - abort_threshold).
+        Always returns True.
         """
         # Check if it's time to log
         current_steps = self.num_timesteps
@@ -111,13 +97,12 @@ class RankMonitorCallback(BaseCallback):
             if self._initial_rank is not None and self._initial_rank > 0:
                 rank_drop = 1.0 - (float(rank) / self._initial_rank)
                 if rank_drop > self.abort_threshold:
-                    # [PFO-WARN] line: logged but training CONTINUES (monitoring-only)
                     warn_msg = (
-                        f"[PFO-WARN] step={current_steps} "
+                        f"[rank-monitor] step={current_steps} "
                         f"rank={rank} initial_rank={self._initial_rank:.0f} "
                         f"rank_fraction={rank_frac:.3f} "
                         f"drop={rank_drop:.1%} > threshold={self.abort_threshold:.0%}. "
-                        f"Monitoring only — PFO auxiliary loss (Week 2) is the mitigation."
+                        f"feature rank below configured threshold."
                     )
                     warnings.warn(warn_msg, stacklevel=2)
                     if self.verbose >= 1:
@@ -135,7 +120,7 @@ class RankMonitorCallback(BaseCallback):
             if self.verbose >= 1:
                 print(f"[RankMonitor] rank computation failed: {exc}", flush=True)
 
-        # CRITICAL: always return True — monitoring-only per SRS §6.3.1.1
+        # Always return True so monitoring never stops training.
         return True
 
     def _on_training_end(self) -> None:

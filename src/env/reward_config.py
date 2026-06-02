@@ -1,8 +1,7 @@
 """Shared reward and action-scale constants for light-painting RL.
 
-PyBullet remains the production physics backend and the standalone env remains
-the dependency-free fallback.  Both should read reward/action contract values
-from this module so reward experiments do not drift by backend.
+PyBullet and standalone environments read reward/action contract values from
+this module so reward experiments stay aligned across backends.
 """
 from __future__ import annotations
 
@@ -146,5 +145,5 @@ def _apply_env_reward_overrides() -> None:
 
 _apply_env_reward_overrides()
 
-# Backward-compatible alias kept in sync with the canonical key.
+# Alias kept in sync with the canonical key.
 W_FLICKER = W_LED_FLICKER

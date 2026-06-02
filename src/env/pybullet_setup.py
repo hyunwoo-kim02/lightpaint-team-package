@@ -1,16 +1,3 @@
-"""
-pybullet_setup.py - PyBullet path compatibility helpers.
-
-Korean characters in the project path break PyBullet's URDF importer because
-`pkg_resources.resource_filename` returns a path that PyBullet later
-re-encodes through code that assumes ASCII. We mirror pybullet_data + the
-gym-pybullet-drones assets directory into an ASCII path under %TEMP%, then
-monkey-patch `pybullet_data.getDataPath` and `pkg_resources.resource_filename`
-to redirect non-ASCII paths to that mirror.
-
-Call apply_korean_path_fix() ONCE at module import time of any file that
-imports gym_pybullet_drones. Idempotent: subsequent calls are no-ops.
-"""
 from __future__ import annotations
 
 import os
@@ -21,17 +8,13 @@ import time
 import uuid
 
 _APPLIED = False
-_SENTINEL_NAME = ".lightpaint_mirror_ready.json"
+_SENTINEL_NAME = ".lightpaint_assets_ready.json"
 _BASE_REQUIRED_FILES = ("plane.urdf",)
 _GPD_REQUIRED_FILES = ("cf2x.urdf", "cf2.dae")
 
 
-def _is_ascii_path(path: str) -> bool:
-    try:
-        os.fspath(path).encode("ascii")
-        return True
-    except UnicodeEncodeError:
-        return False
+def _is_runtime_path(path: str) -> bool:
+    return all(ord(ch) < 128 for ch in os.fspath(path))
 
 
 def _base_temp_dir() -> str:
@@ -45,13 +28,13 @@ def _base_temp_dir() -> str:
         if not candidate:
             continue
         candidate = os.path.abspath(candidate)
-        if _is_ascii_path(candidate) and os.path.isdir(candidate):
+        if _is_runtime_path(candidate) and os.path.isdir(candidate):
             return candidate
-    fallback = os.path.join(os.getcwd(), ".pybullet_ascii_cache")
-    os.makedirs(fallback, exist_ok=True)
-    if not _is_ascii_path(fallback):
-        raise RuntimeError(f"No ASCII-safe PyBullet cache directory is available: {fallback!r}")
-    return fallback
+    cache_dir = os.path.join(os.getcwd(), ".pybullet_runtime_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    if not _is_runtime_path(cache_dir):
+        raise RuntimeError("PyBullet setup failed.")
+    return cache_dir
 
 
 def _acquire_lock(lock_path: str, timeout_s: float = 180.0):
@@ -71,11 +54,11 @@ def _acquire_lock(lock_path: str, timeout_s: float = 180.0):
                         continue
                 except FileNotFoundError:
                     continue
-                raise TimeoutError(f"Timed out waiting for PyBullet asset mirror lock: {lock_path}")
+                raise TimeoutError("PyBullet setup timed out.")
             time.sleep(0.05)
 
 
-def _copy_asset_mirror(src_dir: str, dst_dir: str) -> None:
+def _copy_asset_tree(src_dir: str, dst_dir: str) -> None:
     parent = os.path.dirname(dst_dir)
     tmp_dir = os.path.join(parent, f".{os.path.basename(dst_dir)}.{uuid.uuid4().hex}.tmp")
     shutil.copytree(src_dir, tmp_dir)
@@ -84,32 +67,32 @@ def _copy_asset_mirror(src_dir: str, dst_dir: str) -> None:
     os.replace(tmp_dir, dst_dir)
 
 
-def _sentinel_path(ascii_dir: str) -> str:
-    return os.path.join(ascii_dir, _SENTINEL_NAME)
+def _sentinel_path(asset_dir: str) -> str:
+    return os.path.join(asset_dir, _SENTINEL_NAME)
 
 
-def _read_sentinel(ascii_dir: str) -> dict | None:
+def _read_sentinel(asset_dir: str) -> dict | None:
     try:
-        with open(_sentinel_path(ascii_dir), "r", encoding="utf-8") as f:
+        with open(_sentinel_path(asset_dir), "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else None
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
 
 
-def _write_sentinel(ascii_dir: str, signature: dict) -> None:
-    os.makedirs(ascii_dir, exist_ok=True)
-    tmp_path = _sentinel_path(ascii_dir) + f".{uuid.uuid4().hex}.tmp"
+def _write_sentinel(asset_dir: str, signature: dict) -> None:
+    os.makedirs(asset_dir, exist_ok=True)
+    tmp_path = _sentinel_path(asset_dir) + f".{uuid.uuid4().hex}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(signature, f, sort_keys=True)
-    os.replace(tmp_path, _sentinel_path(ascii_dir))
+    os.replace(tmp_path, _sentinel_path(asset_dir))
 
 
-def _mirror_valid(ascii_dir: str, signature: dict) -> bool:
+def _assets_ready(asset_dir: str, signature: dict) -> bool:
     for rel_path in signature.get("required_files", _BASE_REQUIRED_FILES):
-        if not os.path.isfile(os.path.join(ascii_dir, rel_path)):
+        if not os.path.isfile(os.path.join(asset_dir, rel_path)):
             return False
-    return _read_sentinel(ascii_dir) == signature
+    return _read_sentinel(asset_dir) == signature
 
 
 def _asset_signature(pbd_source: str) -> tuple[dict, str | None]:
@@ -130,74 +113,64 @@ def _asset_signature(pbd_source: str) -> tuple[dict, str | None]:
     return signature, gpd_assets
 
 
-def _copy_gpd_assets(gpd_assets: str | None, ascii_dir: str) -> None:
+def _copy_gpd_assets(gpd_assets: str | None, asset_dir: str) -> None:
     if not gpd_assets:
         return
     for fn in os.listdir(gpd_assets):
         src = os.path.join(gpd_assets, fn)
-        dst = os.path.join(ascii_dir, fn)
+        dst = os.path.join(asset_dir, fn)
         if os.path.isfile(src) and not os.path.isfile(dst):
             shutil.copy2(src, dst)
 
 
-def apply_korean_path_fix(mirror_dirname: str = "lightpaint_pybullet_data") -> str:
-    """
-    Mirror pybullet_data + gym_pybullet_drones/assets into %TEMP%/<mirror_dirname>
-    and monkey-patch lookups to return the mirror path. Returns the mirror path.
-    Idempotent — safe to call multiple times.
-    """
+def prepare_pybullet_assets(asset_dirname: str = "lightpaint_pybullet_data") -> str:
     global _APPLIED
-    ascii_dir = os.path.join(_base_temp_dir(), mirror_dirname)
-    if not _is_ascii_path(ascii_dir):
-        raise RuntimeError(f"PyBullet mirror path is not ASCII-safe: {ascii_dir!r}")
+    asset_dir = os.path.join(_base_temp_dir(), asset_dirname)
+    if not _is_runtime_path(asset_dir):
+        raise RuntimeError("PyBullet setup failed.")
 
-    # 1. Copy pybullet_data → mirror
     import pybullet_data as _pbd
     pbd_source = _pbd.getDataPath()
     signature, gpd_assets = _asset_signature(pbd_source)
-    if not _mirror_valid(ascii_dir, signature):
-        lock_fd = _acquire_lock(ascii_dir + ".lock")
+    if not _assets_ready(asset_dir, signature):
+        lock_fd = _acquire_lock(asset_dir + ".lock")
         try:
-            if not _mirror_valid(ascii_dir, signature):
-                if not os.path.isfile(os.path.join(ascii_dir, "plane.urdf")):
-                    _copy_asset_mirror(pbd_source, ascii_dir)
+            if not _assets_ready(asset_dir, signature):
+                if not os.path.isfile(os.path.join(asset_dir, "plane.urdf")):
+                    _copy_asset_tree(pbd_source, asset_dir)
                 else:
-                    shutil.copytree(pbd_source, ascii_dir, dirs_exist_ok=True)
-                _copy_gpd_assets(gpd_assets, ascii_dir)
-                _write_sentinel(ascii_dir, signature)
+                    shutil.copytree(pbd_source, asset_dir, dirs_exist_ok=True)
+                _copy_gpd_assets(gpd_assets, asset_dir)
+                _write_sentinel(asset_dir, signature)
         finally:
             os.close(lock_fd)
             try:
-                os.unlink(ascii_dir + ".lock")
+                os.unlink(asset_dir + ".lock")
             except FileNotFoundError:
                 pass
 
     if _APPLIED:
-        return ascii_dir
+        return asset_dir
 
-    # 3. Monkey-patch getDataPath → return ASCII mirror
-    _pbd.getDataPath = lambda: ascii_dir  # type: ignore[method-assign]
+    _pbd.getDataPath = lambda: asset_dir  # type: ignore[method-assign]
 
-    # 4. Monkey-patch pkg_resources.resource_filename to remap non-ASCII results
     try:
         import pkg_resources as _pkg
         _original = _pkg.resource_filename
 
-        def _ascii_resource_filename(pkg_or_req, resource_name):
+        def _resource_filename(pkg_or_req, resource_name):
             result = _original(pkg_or_req, resource_name)
-            try:
-                result.encode("ascii")
+            if _is_runtime_path(result):
                 return result
-            except UnicodeEncodeError:
-                basename = os.path.basename(result)
-                candidate = os.path.join(ascii_dir, basename)
-                if os.path.exists(candidate):
-                    return candidate
-                return result
+            basename = os.path.basename(result)
+            candidate = os.path.join(asset_dir, basename)
+            if os.path.exists(candidate):
+                return candidate
+            return result
 
-        _pkg.resource_filename = _ascii_resource_filename
+        _pkg.resource_filename = _resource_filename
     except ImportError:
         pass
 
     _APPLIED = True
-    return ascii_dir
+    return asset_dir

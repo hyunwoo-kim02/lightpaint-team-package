@@ -1,10 +1,8 @@
-"""Phase B PPO/BC pilot for residual velocity and LED control.
+"""Phase B PPO/BC training and evaluation for residual velocity and LED control.
 
-This is a short, reproducible training/evaluation entrypoint.  The success
-target is not raw reward increase; it is whether the residual policy reduces
-corner-window tracking error while preserving straight-segment tracking.  The
-script now accepts square, letter, and drawn JSON references plus M0/M1/M2 wind
-modes; the file name remains for backward compatibility with earlier M0 runs.
+The success target is whether the residual policy reduces corner-window
+tracking error while preserving straight-segment tracking. The script accepts
+square, letter, and drawn JSON references plus M0/M1/M2 wind modes.
 """
 from __future__ import annotations
 
@@ -1191,8 +1189,7 @@ def _check_runtime_dependencies() -> None:
         install_hint = (
             "Missing packages required for PyBullet training: "
             + ", ".join(missing)
-            + ". Install project dependencies with `pip install -r requirements.txt`, "
-            + "or run standalone/unit tests that do not require PyBullet."
+            + ". Install project dependencies with `pip install -r requirements.txt`."
         )
         raise DependencyError(install_hint)
 

@@ -1,12 +1,6 @@
-"""
-env_sanity_w1.py — Pre-flight 4-ASSERT sanity suite for LightPaintAviaryW1.
-Purpose: Verify Dict obs structure, mask validity, future_ref dynamics, and
-         reward sensitivity before any training run.
-SRS reference: SRS_v2.2 §9 (Week 1 Gate G1), system-spec.md AC-2.
-Kit reuse: 4-ASSERT layout + log helpers + process exit semantics from
-           led-feasibility/code/env_sanity_v4.py (transcribed, not imported).
+"""Environment checks for the LightPaint PyBullet environment.
 
-Asserts:
+Checks:
     A1: Dict obs structure (4 keys + correct shapes)
     A2: target_mask.sum() > 100 (letter has pixels)
     A3: future_ref(step=0) != future_ref(step=10) (time dynamics)
@@ -25,8 +19,8 @@ os.environ["PYTHONUTF8"] = "1"
 
 # Resolve package root for module-level import (handles both `python -m` and direct invocation)
 _HERE = Path(__file__).resolve().parent
-_PKG_ROOT = _HERE.parent.parent  # .../rl-lightpaint
-_REPO_ROOT = _PKG_ROOT.parent.parent  # .../mini_script
+_PKG_ROOT = _HERE.parent.parent
+_REPO_ROOT = _PKG_ROOT.parent.parent
 for _p in [str(_PKG_ROOT), str(_REPO_ROOT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -57,12 +51,12 @@ def _save_log() -> None:
 
 def run_sanity_checks() -> bool:
     """
-    Run all 4 asserts and return True if all hard asserts (A1-A3) pass.
+    Run all checks and return True if all required asserts pass.
 
     Writes log to artifacts/env_sanity_w1.stdout.
     Exits with code 1 if any hard assert fails.
     """
-    _log("env_sanity_w1.py - Week 1 pre-flight 4-ASSERT check")
+    _log("env_sanity_w1.py - LightPaint environment check")
     _log(f"Python: {sys.version}")
     _log(f"PKG_ROOT: {_PKG_ROOT}")
 

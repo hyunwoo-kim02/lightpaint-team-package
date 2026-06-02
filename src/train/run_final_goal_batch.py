@@ -1319,9 +1319,10 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(PROFILE_DEFAULTS),
         default="standard",
         help=(
-            "sanity is only an execution check; letters runs canonical DG only; "
-            "standard runs canonical DG plus the user drawn path with 3 seeds; "
-            "final runs the same dual-path matrix with 5 seeds and longer training."
+            "sanity performs a short execution check; letters runs the default "
+            "letter path; standard runs the default letter path plus the user "
+            "drawn path; final runs the same dual-path matrix with the expanded "
+            "seed set and longer training."
         ),
     )
     parser.add_argument("--trajectories", default=None)

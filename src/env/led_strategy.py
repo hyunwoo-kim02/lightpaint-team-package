@@ -1,5 +1,5 @@
 """
-led_strategy.py — LED on/off (or brightness) decision strategies.
+led_strategy.py - LED on/off (or brightness) decision strategies.
 
 Phase scope:
 - ScriptedLED: functional (Phase A/B) - looks up target_mask at the drone's

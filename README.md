@@ -26,21 +26,15 @@ reference path
   - `data/corner_hints/DG_reference.json`
   - `data/drawn_paths/user/user_drawn_path.json`
 
-Python 3.13은 일부 PyTorch/SB3 의존성과 맞지 않을 수 있으므로 권장하지 않습니다.
-
 ## 설치
+
+아래 명령의 `python`은 Python 3.10 또는 3.11입니다.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-Windows에서 기본 `python`이 3.13이면 아래처럼 3.11로 가상환경을 만듭니다.
-
-```powershell
-py -3.11 -m venv .venv
 ```
 
 ## 사용 방법
@@ -62,8 +56,6 @@ powershell -ExecutionPolicy Bypass -File tools\run_dashboard.ps1
 ```powershell
 python -m src.train.train_phase_b --trajectory square --wind-mode M0 --max-steps 60 --total-timesteps 0 --bc-epochs 0 --output-dir artifacts\team_smoke_m0
 ```
-
-이 smoke run은 실행 경로 확인용입니다. 학습을 하지 않으므로 `overall_pass=false`가 나올 수 있습니다.
 
 ## 경로 도구
 
@@ -105,14 +97,18 @@ python -m src.train.verify_final_goal_batch artifacts\final_goal_eval_final
 
 주요 결과 파일은 실행 폴더의 `summary.json`, `metrics.csv`, `matrix_results.csv`, `best_model_manifest.json`입니다.
 
-생성 결과와 임시 학습 산출물은 `artifacts/` 아래에 만들고 Git에는 포함하지 않습니다.
+실행 결과와 학습 산출물은 `artifacts/` 아래에 만들고 Git 대상에서 제외합니다.
 
-## 발표 결과 재현
+## 결과 재현
 
-최종 발표 슬라이드의 결과 화면과 지표는 아래 패키지에서 재현합니다.
+결과 화면과 지표는 아래 명령으로 재현합니다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File repro\presentation_20260531\run_reproduce_figures.ps1
 ```
 
-해당 패키지에는 발표 슬라이드, 선택된 웨이트, 평가 로그, figure 재생성 스크립트가 포함되어 있습니다.
+GUI로 궤적을 확인합니다.
+
+```powershell
+python -m src.train.train_phase_b --trajectory letter --label DG --letter-plane xz --wind-mode M0 --load-model repro\presentation_20260531\weights\M0.zip --eval-only --trained-action-filter corner_tangent_decel --gui --gui-hold-seconds 10 --max-steps 300 --output-dir artifacts\gui_m0
+```

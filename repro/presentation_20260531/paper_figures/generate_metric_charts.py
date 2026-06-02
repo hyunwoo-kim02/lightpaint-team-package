@@ -9,7 +9,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent / "data"
-OUT = HERE / "presentation_charts"
+OUT = HERE / "metric_charts"
 
 MODES = ["M0", "M1", "M2"]
 PHASES = [
@@ -49,7 +49,7 @@ def save(fig: plt.Figure, name: str) -> None:
     fig.savefig(OUT / f"{name}.pdf", bbox_inches="tight")
 
 
-def slide13_rmse(metrics: pd.DataFrame) -> None:
+def plot_rmse(metrics: pd.DataFrame) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.6), sharey=True)
     x = np.arange(len(MODES))
     width = 0.24
@@ -79,11 +79,11 @@ def slide13_rmse(metrics: pd.DataFrame) -> None:
     axes[0].set_ylabel("RMSE (m)")
     axes[0].legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(1.08, 1.24))
     fig.subplots_adjust(top=0.80, wspace=0.04)
-    save(fig, "slide13_rmse_bars")
+    save(fig, "rmse_bars")
     plt.close(fig)
 
 
-def slide14_iou_offtarget(metrics: pd.DataFrame) -> None:
+def plot_iou_offtarget(metrics: pd.DataFrame) -> None:
     cases = [("DG", mode) for mode in MODES] + [("User Drawn", mode) for mode in MODES]
     labels = [f"{'Drawn' if path == 'User Drawn' else path}\n{mode}" for path, mode in cases]
     x = np.arange(len(cases))
@@ -117,15 +117,15 @@ def slide14_iou_offtarget(metrics: pd.DataFrame) -> None:
     axes[0].set_ylabel("Score / Ratio")
     axes[0].legend(ncol=2, frameon=False, loc="upper center", bbox_to_anchor=(1.05, 1.24))
     fig.subplots_adjust(top=0.78, wspace=0.22, bottom=0.20)
-    save(fig, "slide14_iou_offtarget_bars")
+    save(fig, "iou_offtarget_bars")
     plt.close(fig)
 
 
 def main() -> None:
     plt.rcParams.update({"font.family": "DejaVu Sans", "figure.dpi": 150})
     metrics = load_metrics()
-    slide13_rmse(metrics)
-    slide14_iou_offtarget(metrics)
+    plot_rmse(metrics)
+    plot_iou_offtarget(metrics)
 
 
 if __name__ == "__main__":

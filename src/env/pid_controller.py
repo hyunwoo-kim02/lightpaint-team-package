@@ -1,8 +1,8 @@
 """
-pid_controller.py — VelocityPID for LightPaintAviaryW1.
+pid_controller.py - VelocityPID for LightPaintAviaryW1.
 
-Pure-numpy PD-velocity controller used by Phase A (PID sanity).
-Returns a velocity command in m/s clipped to ±max_vel per axis.
+Pure-numpy PD-velocity controller used by Phase A.
+Returns a velocity command in m/s clipped to +-max_vel per axis.
 """
 from __future__ import annotations
 

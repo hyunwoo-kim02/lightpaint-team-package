@@ -60,7 +60,6 @@ REQUIRED_FILES = [
     "data/eval/pid_teacher_loaded_trained_metrics.csv",
     "data/waypoints/DG_reference.json",
     "data/waypoints/user_drawn_path.json",
-    "slides/RL_Final_Presentation_Group6.pptx",
 ]
 
 GENERATED_FILES = [
@@ -68,8 +67,8 @@ GENERATED_FILES = [
     "paper_figures/generated_20260531/fig7_user_drawn_trajectory_comparison.png",
     "paper_figures/generated_20260531/fig8_dg_led_always_on_comparison.png",
     "paper_figures/generated_20260531/fig7_user_drawn_led_always_on_comparison.png",
-    "paper_figures/presentation_charts/slide13_rmse_bars.png",
-    "paper_figures/presentation_charts/slide14_iou_offtarget_bars.png",
+    "paper_figures/metric_charts/rmse_bars.png",
+    "paper_figures/metric_charts/iou_offtarget_bars.png",
 ]
 
 

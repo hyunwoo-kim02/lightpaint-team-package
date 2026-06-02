@@ -39,7 +39,7 @@ class WindMode(ABC):
 
 
 class M0Wind(WindMode):
-    """No disturbance, used for PID sanity."""
+    """No disturbance wind mode."""
 
     def reset(self, rng: np.random.Generator) -> None:
         return None

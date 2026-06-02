@@ -1,14 +1,14 @@
 """
-light_paint_aviary_standalone.py — Standalone numpy-only Phase A env.
+light_paint_aviary_standalone.py - Standalone numpy-only LightPaint env.
 
-DEPRECATED for production runs. Kept as a unit-test fallback that does NOT
-require pybullet/gym-pybullet-drones. Production Phase A runs go through
-`light_paint_aviary_pyb.LightPaintAviaryPyB` (CP-2, D9).
+This module mirrors the LightPaint control interface without requiring
+pybullet/gym-pybullet-drones. The PyBullet implementation remains the main
+simulation environment for final experiments.
 
-Class name `LightPaintAviaryW1` is preserved so existing tests keep working.
+Class name `LightPaintAviaryW1` is preserved for existing imports.
 
 Phase dispatch:
-- 'A'           : PID-only sanity, action_space = Box(0,0,(0,)), wind_mode='M0' enforced.
+- 'A'           : PID-only check, action_space = Box(0,0,(0,)), wind_mode='M0' enforced.
 - 'B'           : PID + velocity/LED residual, action_space = Box(-1,1,(4,)).
 - 'C_discrete'  : frozen B + Discrete(2) LED interface.
 - 'C_continuous': frozen B + Box(0,1,(1,)) brightness interface.
@@ -18,9 +18,9 @@ Composition:
 - self.wind         : WindMode (M0/M1/M2)
 - self.led_strategy : LEDStrategy (ScriptedLED for A/B; Learned* for C)
 
-Backwards compatibility:
+Accepted aliases:
 - `letter=` arg accepted as alias for `label=`.
-- `wind='W0'..'W2'` accepted as deprecated aliases for wind_mode='M0'..'M2'.
+- `wind='W0'..'W2'` accepted as aliases for wind_mode='M0'..'M2'.
 """
 import os
 import sys
@@ -86,8 +86,7 @@ MAX_EPISODE_STEPS = 2000  # default episode horizon (overridable via env init)
 
 # --- Phase B residual scaling ---
 
-# Backwards-compat only. Force magnitudes live in src.env.wind_modes.
-_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
+_WIND_ALIAS_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
 
 # --- Reward weights ---
 W_LED_ASYM_POS = 1.0   # reward for LED ON + on target pixel
@@ -130,9 +129,9 @@ class LightPaintAviaryW1(gym.Env):
     - Residual velocity and LED action interface.
     - Light-painting reward terms.
     - Wind disturbance modes from src.env.wind_modes (M0/M1/M2)
-    - DATT-style 15-point future-ref (per §6.3.1)
-    - Letter pool {R, L, T, I} (per §4.7)
-    - Progress mask updated per step (per §5.1)
+    - 15-point future reference sequence.
+    - Built-in letter mask pool.
+    - Progress mask updated every step.
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -146,7 +145,7 @@ class LightPaintAviaryW1(gym.Env):
         init_box_size: float = 0.05,
         led_always_on: bool = False,
         max_episode_steps: Optional[int] = None,
-        # Backwards-compat aliases
+        # Input aliases
         letter: Optional[str] = None,
         wind: Optional[str] = None,
     ) -> None:
@@ -156,12 +155,12 @@ class LightPaintAviaryW1(gym.Env):
         Args:
             label: Text label to paint (e.g. 'L', 'RL', 'Pig'). Case-sensitive.
             wind_mode: Wind disturbance mode. M0/M1/M2 are active.
-            phase: 'A' (PID sanity) | 'B' (wind robust) | 'C_discrete' | 'C_continuous'.
+            phase: 'A' (PID check) | 'B' (wind robust) | 'C_discrete' | 'C_continuous'.
             gui: Ignored.
             init_box_size: Initial position noise box half-size in meters.
             led_always_on: If True, LED forced ON every step.
-            letter: (deprecated) alias for `label`.
-            wind: (deprecated) legacy 'W0'..'W2' string; mapped to wind_mode.
+            letter: alias for `label`.
+            wind: optional 'W0'..'W2' alias mapped to wind_mode.
         """
         super().__init__()
 
@@ -171,15 +170,15 @@ class LightPaintAviaryW1(gym.Env):
         elif label is None:
             label = letter  # type: ignore[assignment]
         self.label = str(label)
-        self.letter = self.label  # backwards-compat attribute name
+        self.letter = self.label
 
         # Resolve wind / wind_mode alias
-        if wind is not None and wind in _LEGACY_WIND_TO_MODE:
-            wind_mode = _LEGACY_WIND_TO_MODE[wind]
+        if wind is not None and wind in _WIND_ALIAS_TO_MODE:
+            wind_mode = _WIND_ALIAS_TO_MODE[wind]
         self.wind_mode = wind_mode
-        self.wind = wind_mode  # backwards-compat attribute name
+        self.wind = wind_mode
 
-        # Phase A enforces M0 (sanity invariant)
+        # Phase A enforces M0.
         if phase == "A" and self.wind_mode != "M0":
             raise ValueError(
                 f"Phase A enforces wind_mode='M0', got {self.wind_mode!r}."
@@ -257,8 +256,8 @@ class LightPaintAviaryW1(gym.Env):
         return lookup
 
     def _corner_sharpness_for_index(self, corner_idx: int) -> float:
-        fallback = self._corner_sharpness_at_waypoint(corner_idx)
-        return float(np.clip(self._corner_sharpness_lookup.get(int(corner_idx), fallback), 0.0, 1.0))
+        default_sharpness = self._corner_sharpness_at_waypoint(corner_idx)
+        return float(np.clip(self._corner_sharpness_lookup.get(int(corner_idx), default_sharpness), 0.0, 1.0))
 
     def _load_letter_mask(self) -> None:
         """
@@ -315,7 +314,7 @@ class LightPaintAviaryW1(gym.Env):
             from skimage.measure import label as cc_label
             skel = skeletonize(binary, method="lee").astype(np.uint8)
             if skel.sum() == 0:
-                skel = binary  # degenerate fallback
+                skel = binary
             labels = cc_label(skel, connectivity=2)
             num_components = int(labels.max())
         except Exception:
@@ -948,7 +947,7 @@ class LightPaintAviaryW1(gym.Env):
         return obs, float(reward), terminated, truncated, info
 
     def _get_pos(self) -> np.ndarray:
-        """Return current drone position (3,). Used by env_sanity tests."""
+        """Return current drone position (3,). Used by environment checks."""
         return self._pos.copy()
 
     def close(self) -> None:

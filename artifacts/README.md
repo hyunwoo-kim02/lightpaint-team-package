@@ -1,7 +1,3 @@
-# Artifacts Directory
+# 실행 산출물
 
-This directory is intentionally kept in git so fresh clones have a default
-location for pytest temporary folders, dashboard runs, smoke outputs, training
-logs, models, metrics CSVs, and visualizations.
-
-Generated files under this directory are ignored by git.
+실행 결과를 저장하는 폴더입니다. 생성 파일은 Git 대상에서 제외합니다.

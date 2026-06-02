@@ -1,10 +1,4 @@
-"""
-pybullet_snapshot.py — External-camera snapshot for PyBullet DIRECT-mode runs.
-
-Transcribes mini_script/teams/integration/code/render_pybullet_snapshots.py:75-94
-with the same view/proj defaults so the camera framing matches the published
-mini_script visualizations.
-"""
+"""External-camera snapshot utilities for PyBullet DIRECT-mode runs."""
 from __future__ import annotations
 
 from typing import Optional

@@ -1,1 +1,1 @@
-# rl-lightpaint.train subpackage — extractor, callbacks, training entry.
+# LightPaint training subpackage.

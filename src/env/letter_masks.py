@@ -1,13 +1,4 @@
-"""
-letter_masks.py — LetterMasks utility for rl-lightpaint Week 1.
-Purpose: Load, cache, and generate 64x64 binary PNG masks for letters {R, L, T, I}.
-SRS reference: SRS_v2.2 §4.7, system-spec.md AC-1.
-Kit reuse: Pillow textbbox-centered rasterization from letter-geom/code/letter_mask.py,
-           with portable font resolution order per SRS §3.1.
-
-CLI usage:
-    python -m src.env.letter_masks --out <dir> [--letters R L T I] [--size 64]
-"""
+"""Load, cache, and generate binary PNG masks for LightPaint letters."""
 import os
 import sys
 import argparse
@@ -17,7 +8,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# --- Font resolution order per SRS §3.1 portability ---
+# Font resolution order for portable letter rasterization.
 _FONT_CANDIDATES = [
     os.environ.get("LIGHTPAINT_FONT", ""),
     "C:/Windows/Fonts/arialbd.ttf",
@@ -53,7 +44,7 @@ def _resolve_font_at(size: int) -> ImageFont.FreeTypeFont:
 
 
 def _resolve_font(size: int) -> ImageFont.FreeTypeFont:
-    """Backwards-compatible single-letter font resolver (uses 0.85 fill factor)."""
+    """Resolve the default single-letter font."""
     return _resolve_font_at(max(1, int(size * 0.85)))
 
 
@@ -83,7 +74,7 @@ def render_letter(text: str, size: int = 64) -> np.ndarray:
     Render an ASCII string as a float32 binary mask (0.0 or 1.0).
 
     Supports multi-character text (e.g. "RL", "Pig") with automatic font-size
-    fitting. Case is preserved — "Pig" and "PIG" produce different masks.
+    fitting. Case is preserved, so "Pig" and "PIG" produce different masks.
     Uses Pillow textbbox-centered rasterization with portable font resolution.
     Returns shape (size, size) float32 array.
     """

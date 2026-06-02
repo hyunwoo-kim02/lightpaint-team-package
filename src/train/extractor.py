@@ -1,9 +1,4 @@
-"""
-extractor.py — LightPaintExtractor: custom CNN+MLP features extractor.
-Purpose: SB3 BaseFeaturesExtractor subclass for the Dict obs space.
-SRS reference: SRS_v2.2 §6.3.1, system-spec.md AC-3.
-Kit reuse: Architecture transcribed from SRS_v2.2 §6.3.1 code skeleton;
-           CNN Decision 4 = X (retained per user decision).
+"""LightPaint CNN+MLP feature extractor for the Dict observation space.
 
 Architecture (features_dim = 132):
     mask_cnn  (shared): Conv2d(1,16,3,s=2,p=1)+ReLU -> Conv2d(16,32,3,s=2,p=1)+ReLU
@@ -16,8 +11,7 @@ Architecture (features_dim = 132):
     state_mlp   : Linear(12,64)+Tanh         output: 64-dim
     concat: [32 + 32 + 4 + 64] = 132
 
-last_features cache (self._last_features) exposed for RankMonitorCallback
-and future PFO auxiliary loss (Week 2 per SRS §6.3.1.2).
+last_features cache (self._last_features) is exposed for training diagnostics.
 """
 import torch
 import torch.nn as nn
@@ -44,7 +38,7 @@ class LightPaintExtractor(BaseFeaturesExtractor):
 
         Args:
             observation_space: The Dict observation space from LightPaintAviaryW1.
-            features_dim: Must be 132 (fixed by architecture SRS §6.3.1).
+            features_dim: Must be 132 for this architecture.
         """
         super().__init__(observation_space, features_dim=features_dim)
 
@@ -84,7 +78,7 @@ class LightPaintExtractor(BaseFeaturesExtractor):
             nn.Tanh(),
         )
 
-        # Cache for RankMonitorCallback and future PFO auxiliary loss
+        # Cache for training diagnostics.
         self._last_features: torch.Tensor = None  # type: ignore[assignment]
 
     def forward(self, observations: dict) -> torch.Tensor:

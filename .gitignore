@@ -19,13 +19,13 @@ artifacts/*
 teams/
 outputs/
 *_auto.png
+*.pptx
 local_archive/
-RL Final Presentation - *.pptx
 repro/presentation_20260531/paper_figures/*.png
 repro/presentation_20260531/paper_figures/*.pdf
 repro/presentation_20260531/paper_figures/*_sources.md
 repro/presentation_20260531/paper_figures/generated_20260531/
-repro/presentation_20260531/paper_figures/presentation_charts/
+repro/presentation_20260531/paper_figures/*_charts/
 
 # Keep only the canonical DG reference and one user-drawn path in Git.
 data/corner_hints/*.json

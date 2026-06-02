@@ -1,1 +1,1 @@
-"""Evaluation utilities for rl-lightpaint."""
+"""Evaluation utilities for LightPaint."""

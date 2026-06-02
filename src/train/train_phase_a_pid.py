@@ -351,7 +351,7 @@ def main(args: argparse.Namespace) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Phase A PID-only sanity run.")
+    parser = argparse.ArgumentParser(description="Phase A PID-only execution check.")
     add_reference_args(parser)
     parser.add_argument("--wind-mode", default="M0",
                         help="Wind mode. Phase A enforces M0.")

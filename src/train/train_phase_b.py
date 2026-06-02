@@ -1,8 +1,4 @@
-"""Canonical Phase B training entrypoint.
-
-This wrapper keeps the old implementation module reusable while exposing a
-mode- and reference-agnostic command name for team experiments.
-"""
+"""Canonical Phase B training and evaluation entrypoint."""
 from __future__ import annotations
 
 import sys

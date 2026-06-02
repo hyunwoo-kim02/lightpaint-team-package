@@ -1,7 +1,7 @@
-"""DATT-style time-indexed references for light-painting trajectories.
+"""Time-indexed references for light-painting trajectories.
 
-The contract intentionally mirrors the small surface used from DATT refs:
-``pos(t)``, ``vel(t)``, ``acc(t)``, and ``yaw(t)``.  Trajectory sources such as
+The reference contract exposes ``pos(t)``, ``vel(t)``, ``acc(t)``, and
+``yaw(t)``. Trajectory sources such as
 waypoints, stroke JSON, or image-derived paths should compile into this class
 before entering the PyBullet/PID stack.
 """
@@ -23,7 +23,7 @@ DEFAULT_CORNER_MASK_MAX_FRACTION = 0.18
 
 @dataclass(frozen=True)
 class LightPaintRef:
-    """Piecewise-linear constant-speed reference with DATT-style methods."""
+    """Piecewise-linear constant-speed reference."""
 
     waypoints: np.ndarray
     speed: float = 0.35
@@ -190,7 +190,7 @@ def _detect_corner_indices(
     min_sharpness: float = DEFAULT_CORNER_MIN_SHARPNESS,
     min_spacing_m: float = DEFAULT_CORNER_MIN_SPACING_M,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return internal waypoint indices whose heading change is a real corner."""
+    """Return waypoint indices whose heading change is a real corner."""
     pts = np.asarray(pts, dtype=np.float32)
     cumlen = np.asarray(cumlen, dtype=np.float32)
     if len(pts) < 3:

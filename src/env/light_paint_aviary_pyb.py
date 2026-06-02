@@ -2,9 +2,8 @@
 light_paint_aviary_pyb.py - LightPaintAviaryPyB (Phase A PyBullet).
 
 Inherits gym_pybullet_drones BaseRLAviary so PyBullet CF2X dynamics + URDF
-mesh are first-class. PID is `DSLPIDControl.computeControlFromState` (D7);
-wind disturbance is injected via `_physics` override using
-`p.applyExternalForce(WORLD_FRAME)` (D2/D3).
+mesh are first-class. PID is `DSLPIDControl.computeControlFromState`; wind
+disturbance is injected via `_physics` using `p.applyExternalForce`.
 
 Phase A runs pure PID plus scripted LED. Phase B runs PID target velocity and
 LED command residuals on top of the same baseline.
@@ -15,14 +14,13 @@ Composition:
 - self.G_letter      : binary target mask (case-preserved)
 - self._ref_waypoints, self._ref_cumlen : skeleton-walk reference path
 
-The shared standalone env (`light_paint_aviary_standalone.py`) remains for
-unit-test fallback only; production runs go through this PyBullet env.
+The shared standalone env (`light_paint_aviary_standalone.py`) provides the
+same interface for lightweight checks.
 """
 from __future__ import annotations
 
-# === PYBULLET-PATH-FIX-1 (must run before any pybullet/gpd import) ===
-from src.env.pybullet_setup import apply_korean_path_fix as _apply_fix
-_apply_fix()
+from src.env.pybullet_setup import prepare_pybullet_assets as _prepare_pybullet_assets
+_prepare_pybullet_assets()
 
 import math
 import os
@@ -38,7 +36,7 @@ from gym_pybullet_drones.envs.BaseRLAviary import BaseRLAviary
 from gym_pybullet_drones.utils.enums import ActionType, DroneModel, ObservationType, Physics
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
-# CP-1 modules (engine-agnostic)
+# Engine-agnostic modules.
 from src.env.wind_modes import make_wind_mode
 from src.env.led_strategy import make_led_strategy
 from src.env.lightpaint_geometry import (
@@ -86,7 +84,7 @@ from src.env.reward_terms import compute_lightpaint_reward, is_led_on, led_brigh
 
 
 # ----------------------------------------------------------------------
-# Constants (mirrored from light_paint_aviary_standalone.py for parity)
+# Constants.
 # ----------------------------------------------------------------------
 POS_NORM = 1.0
 VEL_NORM = 1.5
@@ -102,12 +100,12 @@ Z_MIN, Z_MAX = 0.5, 2.5
 Y_CANVAS = 0.0
 
 LED_STAMP_RADIUS_PX = 1
-LED_STAMP_MIN_TARGET_FRACTION = 6.0 / 9.0
+LED_STAMP_MIN_TARGET_FRACTION = 7.0 / 9.0
 LED_PROGRESS_GATE_MAX_OFF_TARGET_RATIO = 0.115
 
 MAX_EPISODE_STEPS_DEFAULT = 2000
 
-_LEGACY_WIND_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
+_WIND_ALIAS_TO_MODE = {"W0": "M0", "W1": "M1", "W2": "M2"}
 
 
 def _env_flag(name: str) -> bool:
@@ -142,7 +140,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         reference: Optional[LightPaintRef] = None,
         ctrl_freq: int = 30,
         pyb_freq: int = 240,
-        # Backwards-compat aliases (mirror standalone API)
+        # Input aliases.
         letter: Optional[str] = None,
         wind: Optional[str] = None,
     ) -> None:
@@ -153,8 +151,8 @@ class LightPaintAviaryPyB(BaseRLAviary):
             label = letter  # type: ignore[assignment]
         self.label = str(label)
 
-        if wind is not None and wind in _LEGACY_WIND_TO_MODE:
-            wind_mode = _LEGACY_WIND_TO_MODE[wind]
+        if wind is not None and wind in _WIND_ALIAS_TO_MODE:
+            wind_mode = _WIND_ALIAS_TO_MODE[wind]
         self.wind_mode = wind_mode
 
         if phase == "A" and self.wind_mode != "M0":
@@ -179,7 +177,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         else:
             self._ref_waypoints = self.reference.waypoints.copy()
             self._ref_cumlen = self.reference.cumlen.copy()
-            include_led_off_segments = _env_flag("LIGHTPAINT_LEGACY_REFERENCE_MASK_CONNECTORS")
+            include_led_off_segments = _env_flag("LIGHTPAINT_REFERENCE_MASK_CONNECTORS")
             self.G_letter = self._build_reference_mask(
                 self._ref_waypoints,
                 segment_led=self.reference.segment_led,
@@ -290,8 +288,8 @@ class LightPaintAviaryPyB(BaseRLAviary):
         return lookup
 
     def _corner_sharpness_for_index(self, corner_idx: int) -> float:
-        fallback = self._corner_sharpness_at_waypoint(corner_idx)
-        return float(np.clip(self._corner_sharpness_lookup.get(int(corner_idx), fallback), 0.0, 1.0))
+        default_sharpness = self._corner_sharpness_at_waypoint(corner_idx)
+        return float(np.clip(self._corner_sharpness_lookup.get(int(corner_idx), default_sharpness), 0.0, 1.0))
 
     def _build_action_space(self, phase: str) -> spaces.Space:
         if phase == "A":
@@ -305,7 +303,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         raise ValueError(f"Unknown phase: {phase!r}")
 
     # ------------------------------------------------------------------
-    # Letter mask + reference path (CP-1 transcribe)
+    # Letter mask + reference path.
     # ------------------------------------------------------------------
     def _load_letter_mask(self) -> None:
         _here = Path(__file__).resolve().parent
@@ -326,7 +324,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
             save_mask(self.G_letter, png_path)
 
     def _build_ref_trajectory(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Skeleton-walk reference path (transcribe of standalone CP-1 algorithm)."""
+        """Skeleton-walk reference path."""
         binary = (self.G_letter > 0.5).astype(np.uint8)
         if binary.sum() == 0:
             pts = np.array(
@@ -522,7 +520,7 @@ class LightPaintAviaryPyB(BaseRLAviary):
         )
 
     # ------------------------------------------------------------------
-    # Future-ref obs helper (mirrors v4 reference)
+    # Future-ref obs helper.
     # ------------------------------------------------------------------
     def _get_future_ref_15pts(self, ep_step: int) -> np.ndarray:
         cur_pos = self._get_world_pos()
